@@ -17,11 +17,14 @@ class AIVisionEngine:
         self.timeout = 90.0
 
     def analyze_image(self, image_bytes: bytes, existing_tags: str,
-                      mime_type: str = "image/png") -> Optional[Dict]:
+                      mime_type: str = "image/png", custom_prompt: str = None) -> Optional[Dict]:
         if not self.api_key or not self.api_url:
             return self._mock_analyze(existing_tags)
 
-        user_prompt = self._build_prompt(existing_tags)
+        if custom_prompt:
+            user_prompt = custom_prompt
+        else:
+            user_prompt = self._build_prompt(existing_tags)
 
         try:
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -103,24 +106,31 @@ class AIVisionEngine:
         return self._parse_response(content)
 
     def _build_prompt(self, existing_tags: str) -> str:
-        return f"""Analyze this image and identify hashtags. Return ONLY JSON:
+        return f"""Analyze this image and identify hashtags.
+
+Return ONLY JSON with these fields:
 {{
   "object_1": "main_subject",
-  "object_2": "secondary_subject",
-  "object_3": "detail_subject",
+  "object_2": "secondary_subject_or_none",
+  "object_3": "detail_subject_or_none",
   "style": "art_style",
   "color": "dominant_color",
   "mood": "none",
   "gender": "none"
 }}
 
-EXISTING TAGS (use these for reference): {existing_tags[:500]}
+EXISTING DATABASE TAGS: {existing_tags[:600]}
 
-Rules:
-- ONLY identify VISIBLE elements
-- NO mood/gender analysis
-- Keep tags lowercase, no spaces
-- Return ONLY valid JSON"""
+CRITICAL RULES:
+- IF you see a match in the existing tags list → use that exact tag
+- IF nothing matches in existing tags → CREATE A NEW TAG based on what you SEE
+- NEVER return "none" for object_1, style, or color — always propose something
+- object_1 is MANDATORY, must be a real value
+- style and color must NEVER be "none" — if unsure, propose the closest match
+- object_2 and object_3 can be "none" if image has only 1 main subject
+- Mood and gender must always be "none"
+- Keep all tags lowercase, no spaces, simple words
+- Return ONLY valid JSON, no markdown"""
 
     def _parse_response(self, content: str) -> Dict:
         if not content:

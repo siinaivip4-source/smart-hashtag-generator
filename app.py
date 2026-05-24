@@ -106,26 +106,59 @@ def normalize_objects(result: dict) -> dict:
 
 
 # ===================== AUTO-FILL EMPTY FIELDS =====================
-def auto_fill_empty(result: dict) -> dict:
-    """If AI returns 'none' for all objects, auto-pick from DB. Style/Color get suggestions."""
+def auto_fill_empty(result: dict, image_bytes: bytes) -> dict:
+    """If AI returned 'none', re-analyze with a stronger creative prompt."""
+    needs_retry = False
+    obj_all_none = all(result.get(f, "none") in ("none", "", "nan") for f in ["object_1", "object_2", "object_3"])
+    style_none = result.get("style", "none") in ("none", "", "nan")
+    color_none = result.get("color", "none") in ("none", "", "nan")
+
+    if obj_all_none or style_none or color_none:
+        needs_retry = True
+
+    if not needs_retry:
+        return result
+
+    # Re-analyze with a more forceful creative prompt
+    from ai_engine import AIVisionEngine
+    engine = AIVisionEngine()
+    retry_prompt = f"""Analyze this image AGAIN. Previous attempt failed to identify objects/style/color.
+
+RULES:
+- object_1 is MANDATORY — propose the main subject you SEE
+- style is MANDATORY — identify the art style (2d, 3d, realistic, anime, cartoon, sketch, etc.)
+- color is MANDATORY — identify the dominant color
+- BE CREATIVE if nothing matches exactly
+- Return ONLY JSON: {{"object_1": "...", "object_2": "none", "object_3": "none", "style": "...", "color": "...", "mood": "none", "gender": "none"}}"""
+
+    try:
+        retry_result = engine.analyze_image(image_bytes, "", custom_prompt=retry_prompt)
+        if retry_result:
+            if obj_all_none:
+                result["object_1"] = retry_result.get("object_1", "none")
+                result["object_2"] = retry_result.get("object_2", "none")
+                result["object_3"] = retry_result.get("object_3", "none")
+                result["_ai_suggested_obj"] = True
+            if style_none and retry_result.get("style", "none") not in ("none", "", "nan"):
+                result["style"] = retry_result["style"]
+                result["_ai_suggested_style"] = True
+            if color_none and retry_result.get("color", "none") not in ("none", "", "nan"):
+                result["color"] = retry_result["color"]
+                result["_ai_suggested_color"] = True
+    except Exception:
+        pass
+
+    # Fallback: if still none for object_1, pick from DB
     opts = st.session_state.dropdown_options
-
-    # Object mandatory: at least one must have a value
-    obj_fields = ["object_1", "object_2", "object_3"]
-    all_none = all(result.get(f, "none") in ("none", "", "nan") for f in obj_fields)
-    if all_none and opts["object_1"]:
-        result["object_1"] = f"[SUGGEST] {opts['object_1'][0]}"
-        result["_suggested_obj"] = True
-
-    # Style: auto-pick if none
+    if result.get("object_1", "none") in ("none", "", "nan") and opts["object_1"]:
+        result["object_1"] = opts["object_1"][0]
+        result["_fallback_obj"] = True
     if result.get("style", "none") in ("none", "", "nan") and opts["style"]:
-        result["style"] = f"[SUGGEST] {opts['style'][0]}"
-        result["_suggested_style"] = True
-
-    # Color: auto-pick if none
+        result["style"] = opts["style"][0]
+        result["_fallback_style"] = True
     if result.get("color", "none") in ("none", "", "nan") and opts["color"]:
-        result["color"] = f"[SUGGEST] {opts['color'][0]}"
-        result["_suggested_color"] = True
+        result["color"] = opts["color"][0]
+        result["_fallback_color"] = True
 
     return result
 def analyze_image(image_bytes: bytes, app_name: str) -> dict:
@@ -142,7 +175,7 @@ def analyze_image(image_bytes: bytes, app_name: str) -> dict:
     engine = AIVisionEngine()
     result = engine.analyze_image(image_bytes, existing_tags)
     result = normalize_objects(result)
-    return auto_fill_empty(result)
+    return auto_fill_empty(result, image_bytes)
 
 
 # ===================== EXPORT =====================
@@ -327,12 +360,6 @@ def safe_index(options, value):
     try:
         return options.index(value)
     except ValueError:
-        # Handle [SUGGEST] prefix
-        if isinstance(value, str) and value.startswith("[SUGGEST] "):
-            try:
-                return options.index(value[10:])
-            except ValueError:
-                pass
         return 0
 
 
@@ -367,13 +394,11 @@ def render_card(img, idx):
         st.markdown(f"**STT:{img['stt']}** | Qwen3.6 | {badge}", unsafe_allow_html=True)
 
         if status == "done":
-            # Show suggestions hint
-            if r.get("_suggested_obj"):
-                st.caption("💡 Object được gợi ý từ DB (AI không nhận diện được)")
-            if r.get("_suggested_style"):
-                st.caption("💡 Style được gợi ý từ DB")
-            if r.get("_suggested_color"):
-                st.caption("💡 Color được gợi ý từ DB")
+            # Show suggestion badges
+            if r.get("_ai_suggested_obj") or r.get("_ai_suggested_style") or r.get("_ai_suggested_color"):
+                st.caption("🤖 AI tự đề xuất hashtag mới (không có trong DB)")
+            if r.get("_fallback_obj"):
+                st.caption("⚠️ Không nhận diện được Object — lấy từ DB")
 
             # OBJECT section
             st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;">🔹 OBJECT</div>', unsafe_allow_html=True)
