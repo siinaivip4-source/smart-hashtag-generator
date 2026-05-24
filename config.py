@@ -1,30 +1,29 @@
 import os
-import streamlit as st
+
+try:
+    import streamlit as st
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+
+def _get_config(key: str, default: str = "") -> str:
+    val = os.environ.get(key)
+    if val is not None:
+        return val
+    if _HAS_STREAMLIT:
+        val = st.secrets.get(key)
+        if val is not None:
+            return val
+    return default
 
 # --- Supabase Configuration ---
-# Priority: Streamlit secrets > environment variables > hardcoded defaults
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    st.secrets.get("SUPABASE_URL", "")
-)
-SUPABASE_KEY = os.environ.get(
-    "SUPABASE_KEY",
-    st.secrets.get("SUPABASE_KEY", "")
-)
-SUPABASE_TABLE = os.environ.get(
-    "SUPABASE_TABLE",
-    st.secrets.get("SUPABASE_TABLE", "core_hashtags")
-)
+SUPABASE_URL = _get_config("SUPABASE_URL")
+SUPABASE_KEY = _get_config("SUPABASE_KEY")
+SUPABASE_TABLE = _get_config("SUPABASE_TABLE", "core_hashtags")
 
 # --- OpenCode Vision API Configuration ---
-AI_API_URL = os.environ.get(
-    "AI_API_URL",
-    st.secrets.get("AI_API_URL", "https://api.opencode.ai/v1/vision/analyze")
-)
-AI_API_KEY = os.environ.get(
-    "AI_API_KEY",
-    st.secrets.get("AI_API_KEY", "")
-)
+AI_API_URL = _get_config("AI_API_URL", "https://api.opencode.ai/v1/vision/analyze")
+AI_API_KEY = _get_config("AI_API_KEY")
 
 # --- Application Constants ---
 APP_NAMES = ["W1", "3D1", "3D2", "3D3", "Zipper", "Charging"]
