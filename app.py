@@ -203,6 +203,13 @@ def run_batch():
 
 
 # ===================== UI: MAIN GRID =====================
+def safe_index(options, value):
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
 def render_card(img, idx):
     r = st.session_state.results.get(img["name"], {})
     status = r.get("status", "pending")
@@ -231,21 +238,26 @@ def render_card(img, idx):
         if status == "done":
             cols = st.columns(2)
             with cols[0]:
-                r["object_1"] = st.selectbox("Object 1", options=["none"] + opts["object_1"],
-                                              index=max(0, (["none"] + opts["object_1"]).index(r.get("object_1","none"))),
+                o1_opts = ["none"] + opts["object_1"]
+                r["object_1"] = st.selectbox("Object 1", options=o1_opts,
+                                              index=safe_index(o1_opts, r.get("object_1","none")),
                                               key=f"o1_{idx}", label_visibility="collapsed")
-                r["object_2"] = st.selectbox("Object 2", options=["none"] + opts["object_2"],
-                                              index=max(0, (["none"] + opts["object_2"]).index(r.get("object_2","none"))),
+                o2_opts = ["none"] + opts["object_2"]
+                r["object_2"] = st.selectbox("Object 2", options=o2_opts,
+                                              index=safe_index(o2_opts, r.get("object_2","none")),
                                               key=f"o2_{idx}", label_visibility="collapsed")
-                r["object_3"] = st.selectbox("Object 3", options=["none"] + opts["object_3"],
-                                              index=max(0, (["none"] + opts["object_3"]).index(r.get("object_3","none"))),
+                o3_opts = ["none"] + opts["object_3"]
+                r["object_3"] = st.selectbox("Object 3", options=o3_opts,
+                                              index=safe_index(o3_opts, r.get("object_3","none")),
                                               key=f"o3_{idx}", label_visibility="collapsed")
-                r["style"] = st.selectbox("Style", options=["none"] + opts["style"],
-                                           index=max(0, (["none"] + opts["style"]).index(r.get("style","none"))),
+                s_opts = ["none"] + opts["style"]
+                r["style"] = st.selectbox("Style", options=s_opts,
+                                           index=safe_index(s_opts, r.get("style","none")),
                                            key=f"sty_{idx}", label_visibility="collapsed")
             with cols[1]:
-                r["color"] = st.selectbox("Color", options=["none"] + opts["color"],
-                                           index=max(0, (["none"] + opts["color"]).index(r.get("color","none"))),
+                c_opts = ["none"] + opts["color"]
+                r["color"] = st.selectbox("Color", options=c_opts,
+                                           index=safe_index(c_opts, r.get("color","none")),
                                            key=f"clr_{idx}", label_visibility="collapsed")
                 r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
                 r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
