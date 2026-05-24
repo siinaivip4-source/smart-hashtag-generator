@@ -27,6 +27,7 @@ def init_state():
         "is_mock": True,
         "dropdown_options": {"object_1": [], "object_2": [], "object_3": [], "style": [], "color": []},
         "start_number": 1,
+        "ai_error": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -92,16 +93,16 @@ def analyze_image(image_bytes: bytes, app_name: str):
     st.session_state.is_mock = not (AI_API_KEY and AI_API_URL)
 
     if st.session_state.is_mock:
-        import random
         opts = st.session_state.dropdown_options
         return {
-            "object_1": random.choice(opts["object_1"]) if opts["object_1"] else "none",
-            "object_2": random.choice(opts["object_2"]) if opts["object_2"] else "none",
-            "object_3": random.choice(opts["object_3"]) if opts["object_3"] else "none",
-            "style": random.choice(opts["style"]) if opts["style"] else "none",
-            "color": random.choice(opts["color"]) if opts["color"] else "none",
+            "object_1": opts["object_1"][0] if opts["object_1"] else "none",
+            "object_2": opts["object_2"][0] if opts["object_2"] else "none",
+            "object_3": opts["object_3"][0] if opts["object_3"] else "none",
+            "style": opts["style"][0] if opts["style"] else "none",
+            "color": opts["color"][0] if opts["color"] else "none",
             "mood": "none",
             "gender": "none",
+            "_mock": True
         }
 
     prompt = f"""Analyze this image. Return ONLY JSON:
@@ -151,8 +152,9 @@ Use these as reference: {existing_tags[:500]}"""
                 "mood": "none",
                 "gender": "none",
             }
-    except Exception:
-        return {"object_1": "none", "object_2": "none", "object_3": "none", "style": "none", "color": "none", "mood": "none", "gender": "none"}
+    except Exception as e:
+        st.session_state.ai_error = str(e)[:200]
+        return {"object_1": "none", "object_2": "none", "object_3": "none", "style": "none", "color": "none", "mood": "none", "gender": "none", "error": str(e)[:200]}
 
 
 # ===================== EXPORT =====================
@@ -234,6 +236,8 @@ def render_sidebar():
             st.info("AI: Mock mode")
         else:
             st.success("AI: Live")
+        if st.session_state.get("ai_error"):
+            st.error(f"AI Error: {st.session_state.ai_error}")
 
 
 # ===================== BATCH PROCESSING =====================
@@ -278,6 +282,12 @@ def render_card(img, idx):
         st.image(Image.open(io.BytesIO(img["bytes"])), use_container_width=True)
 
         st.markdown(f"**STT: {img['stt']}** | CLIP (OpenAI) | {'✅ Done' if status == 'done' else '⏳ Pending'}")
+
+        if r.get("_mock"):
+            st.caption("⚠️ MOCK MODE — Chưa có AI key thật")
+
+        if r.get("error"):
+            st.error(f"AI Error: {r['error']}")
 
         if status == "done":
             cols = st.columns(2)
