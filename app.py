@@ -20,6 +20,7 @@ st.set_page_config(
 def init_state():
     defaults = {
         "app_name": None,
+        "batch_mode": True,
         "images": [],
         "results": {},
         "processing": False,
@@ -28,6 +29,7 @@ def init_state():
         "dropdown_options": {"object_1": [], "object_2": [], "object_3": [], "style": [], "color": []},
         "start_number": 1,
         "ai_error": None,
+        "batch_stats": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -54,22 +56,10 @@ def load_dropdown_options(app_name: str):
     for t in tags:
         parent_map[t["hashtag"]] = t.get("parent_hashtag") or None
 
-    level1 = set()
-    level2 = set()
-    level3 = set()
     all_objects = set()
     for t in tags:
-        cat = t.get("category", "")
-        h = t["hashtag"]
-        p = parent_map.get(h)
-        if cat == "object":
-            all_objects.add(h)
-            if p is None:
-                level1.add(h)
-            elif parent_map.get(p) is None:
-                level2.add(h)
-            else:
-                level3.add(h)
+        if t.get("category") == "object":
+            all_objects.add(t["hashtag"])
 
     opts["object_1"] = sorted(all_objects)
     opts["object_2"] = sorted(all_objects)
@@ -78,6 +68,31 @@ def load_dropdown_options(app_name: str):
     opts["color"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "color"))
     st.session_state.dropdown_options = opts
     return opts
+
+
+# ===================== OBJECT DEDUP LOGIC =====================
+def normalize_objects(result: dict) -> dict:
+    objects = [
+        result.get("object_1", "none"),
+        result.get("object_2", "none"),
+        result.get("object_3", "none"),
+    ]
+    seen = set()
+    cleaned = []
+    for obj in objects:
+        obj = obj.strip().lower()
+        if obj in ("none", "", "nan"):
+            cleaned.append("none")
+        elif obj not in seen:
+            seen.add(obj)
+            cleaned.append(obj)
+        else:
+            cleaned.append("none")
+
+    result["object_1"] = cleaned[0]
+    result["object_2"] = cleaned[1]
+    result["object_3"] = cleaned[2]
+    return result
 
 
 # ===================== AI ENGINE =====================
@@ -93,7 +108,8 @@ def analyze_image(image_bytes: bytes, app_name: str):
     st.session_state.is_mock = not (AI_API_KEY and AI_API_URL)
 
     engine = AIVisionEngine()
-    return engine.analyze_image(image_bytes, existing_tags)
+    result = engine.analyze_image(image_bytes, existing_tags)
+    return normalize_objects(result)
 
 
 # ===================== EXPORT =====================
@@ -138,8 +154,19 @@ def render_sidebar():
         st.divider()
         st.markdown("### 📁 Nguon anh")
 
-        uploaded = st.file_uploader("Upload anh", type=["jpg","jpeg","png","webp","gif"],
-                                     accept_multiple_files=True, key="sidebar_upload")
+        st.session_state.batch_mode = st.toggle("Batch Folder (nhieu anh)", value=True, key="batch_toggle")
+
+        if st.session_state.batch_mode:
+            uploaded = st.file_uploader(
+                "Tai nhieu anh cung luc", type=["jpg","jpeg","png","webp","gif"],
+                accept_multiple_files=True, key="batch_upload"
+            )
+        else:
+            uploaded = st.file_uploader(
+                "Tai 1 anh", type=["jpg","jpeg","png","webp","gif"],
+                accept_multiple_files=False, key="single_upload"
+            )
+            uploaded = [uploaded] if uploaded else []
 
         if uploaded:
             st.session_state.images = []
@@ -161,9 +188,18 @@ def render_sidebar():
 
         if st.session_state.results:
             st.divider()
-            fmt = st.radio("Export", ["CSV", "Excel"], horizontal=True)
+            st.markdown("### 📤 Xuat File")
+            fmt = st.radio("Dinh dang", ["CSV", "Excel"], horizontal=True, key="export_fmt")
             data, fname, mime = export_results(fmt.lower())
-            st.download_button("Tai xuong", data, file_name=fname, mime=mime, use_container_width=True)
+            st.download_button(f"Tai xuong {fmt}", data, file_name=fname, mime=mime, use_container_width=True)
+
+            if st.session_state.batch_stats:
+                with st.expander("Thong ke Batch"):
+                    bs = st.session_state.batch_stats
+                    st.metric("Anh da xu ly", bs.get("total", 0))
+                    st.metric("Co Object", bs.get("has_obj", 0))
+                    st.metric("Co Style", bs.get("has_style", 0))
+                    st.metric("Co Color", bs.get("has_color", 0))
 
         st.divider()
         db = get_db()
@@ -190,14 +226,26 @@ def run_batch():
     progress = st.progress(0)
     status = st.empty()
 
+    stats = {"total": 0, "has_obj": 0, "has_style": 0, "has_color": 0}
+
     for i, img in enumerate(st.session_state.images):
         status.text(f"Dang xu ly {i+1}/{len(st.session_state.images)}: {img['name']}")
         result = analyze_image(img["bytes"], app_name)
         result["status"] = "done"
         st.session_state.results[img["name"]] = result
+
+        stats["total"] += 1
+        if result.get("object_1", "none") != "none":
+            stats["has_obj"] += 1
+        if result.get("style", "none") != "none":
+            stats["has_style"] += 1
+        if result.get("color", "none") != "none":
+            stats["has_color"] += 1
+
         progress.progress((i + 1) / len(st.session_state.images))
 
-    status.text(f"Hoan thanh! {len(st.session_state.images)} anh.")
+    st.session_state.batch_stats = stats
+    status.text(f"Hoan thanh! {stats['total']} anh, {stats['has_obj']} co Object, {stats['has_style']} co Style, {stats['has_color']} co Color")
     st.session_state.processing = False
     st.rerun()
 
@@ -217,54 +265,53 @@ def render_card(img, idx):
 
     with st.container():
         st.markdown(f"""
-        <div style="border:1px solid #2a2a3a;border-radius:10px;padding:12px;margin-bottom:10px;background:#0d1117;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="color:#8b949e;font-size:11px;">{img['name'][:20]}...</span>
-                <span style="color:#58a6ff;font-size:11px;">{img['size_kb']:.1f}KB</span>
+        <div style="border:1px solid #30363d;border-radius:10px;padding:10px;margin-bottom:8px;background:#0d1117;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                <span style="color:#8b949e;font-size:10px;">{img['name'][:22]}</span>
+                <span style="color:#58a6ff;font-size:10px;">{img['size_kb']:.1f}KB</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
         st.image(Image.open(io.BytesIO(img["bytes"])), use_container_width=True)
 
-        st.markdown(f"**STT: {img['stt']}** | CLIP (OpenAI) | {'✅ Done' if status == 'done' else '⏳ Pending'}")
+        st.markdown(f"**STT: {img['stt']}** | Qwen3.6 | {'✅ Done' if status == 'done' else '⏳ Pending'}")
 
         if r.get("_mock"):
-            st.caption("⚠️ MOCK MODE — Chưa có AI key thật")
-
+            st.caption("⚠️ MOCK MODE")
         if r.get("error"):
             st.error(f"AI Error: {r['error']}")
 
         if status == "done":
-            cols = st.columns(2)
-            with cols[0]:
-                o1_opts = ["none"] + opts["object_1"]
-                r["object_1"] = st.selectbox("Object 1", options=o1_opts,
-                                              index=safe_index(o1_opts, r.get("object_1","none")),
-                                              key=f"o1_{idx}", label_visibility="collapsed")
-                o2_opts = ["none"] + opts["object_2"]
-                r["object_2"] = st.selectbox("Object 2", options=o2_opts,
-                                              index=safe_index(o2_opts, r.get("object_2","none")),
-                                              key=f"o2_{idx}", label_visibility="collapsed")
-                o3_opts = ["none"] + opts["object_3"]
-                r["object_3"] = st.selectbox("Object 3", options=o3_opts,
-                                              index=safe_index(o3_opts, r.get("object_3","none")),
-                                              key=f"o3_{idx}", label_visibility="collapsed")
-                s_opts = ["none"] + opts["style"]
-                r["style"] = st.selectbox("Style", options=s_opts,
-                                           index=safe_index(s_opts, r.get("style","none")),
-                                           key=f"sty_{idx}", label_visibility="collapsed")
-            with cols[1]:
-                c_opts = ["none"] + opts["color"]
-                r["color"] = st.selectbox("Color", options=c_opts,
-                                           index=safe_index(c_opts, r.get("color","none")),
-                                           key=f"clr_{idx}", label_visibility="collapsed")
-                r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
-                r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
+            st.markdown("**🔹 OBJECT**")
+            o1_opts = ["none"] + opts["object_1"]
+            r["object_1"] = st.selectbox("Object 1", options=o1_opts,
+                                          index=safe_index(o1_opts, r.get("object_1","none")),
+                                          key=f"o1_{idx}", label_visibility="visible")
+            o2_opts = ["none"] + opts["object_2"]
+            r["object_2"] = st.selectbox("Object 2", options=o2_opts,
+                                          index=safe_index(o2_opts, r.get("object_2","none")),
+                                          key=f"o2_{idx}", label_visibility="visible")
+            o3_opts = ["none"] + opts["object_3"]
+            r["object_3"] = st.selectbox("Object 3", options=o3_opts,
+                                          index=safe_index(o3_opts, r.get("object_3","none")),
+                                          key=f"o3_{idx}", label_visibility="visible")
+
+            st.markdown("**🎨 STYLE / COLOR / MOOD**")
+            s_opts = ["none"] + opts["style"]
+            r["style"] = st.selectbox("Style", options=s_opts,
+                                       index=safe_index(s_opts, r.get("style","none")),
+                                       key=f"sty_{idx}", label_visibility="visible")
+            c_opts = ["none"] + opts["color"]
+            r["color"] = st.selectbox("Color", options=c_opts,
+                                       index=safe_index(c_opts, r.get("color","none")),
+                                       key=f"clr_{idx}", label_visibility="visible")
+            r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="visible")
+            r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="visible")
 
             st.session_state.results[img["name"]] = r
 
-            if st.button("▶", key=f"re_{idx}", use_container_width=True):
+            if st.button("🔄 Phan tich lai", key=f"re_{idx}", use_container_width=True):
                 new_r = analyze_image(img["bytes"], st.session_state.app_name)
                 new_r["status"] = "done"
                 st.session_state.results[img["name"]] = new_r
@@ -273,11 +320,11 @@ def render_card(img, idx):
 
 def render_grid():
     if not st.session_state.images:
-        st.info("Chua co anh. Upload anh o sidebar.")
+        st.info("Chua co anh. Upload anh o sidebar (bat Batch Folder de tai nhieu anh).")
         return
 
     n = len(st.session_state.images)
-    cols_per_row = 4
+    cols_per_row = st.session_state.get("grid_cols", 4)
     for i in range(0, n, cols_per_row):
         row_cols = st.columns(cols_per_row)
         for j in range(cols_per_row):
@@ -295,13 +342,13 @@ def main():
         .stApp { background: #0d1117; }
         [data-testid="stSidebar"] { background: #161b22; }
         .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
-        .stButton > button { background: #238636; color: white; border: none; }
-        .stDownloadButton > button { background: #1f6feb; color: white; border: none; }
+        .stButton > button { background: #238636; color: white; border: none; border-radius: 6px; }
+        .stDownloadButton > button { background: #1f6feb; color: white; border: none; border-radius: 6px; }
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("#  HashTag AI")
-    st.caption("CLIP (OpenAI) | SiinJiuYunShan")
+    st.caption("Qwen3.6 Plus Vision | SiinJiuYunShan")
     st.divider()
 
     left, right = st.columns([1, 3])
@@ -312,11 +359,17 @@ def main():
     with right:
         st.markdown(f"### KET QUA  {len(st.session_state.images)} anh")
         if st.session_state.images:
-            c1, c2 = st.columns([5, 1])
+            c1, c2, c3 = st.columns([4, 1, 1])
             with c2:
-                if st.button("🗑 Xoa toan bo anh", use_container_width=True):
+                st.session_state.grid_cols = st.selectbox(
+                    "So cot", [2, 3, 4], index=2,
+                    key="grid_cols_sel", label_visibility="collapsed"
+                )
+            with c3:
+                if st.button("🗑 Xoa het", use_container_width=True):
                     st.session_state.images = []
                     st.session_state.results = {}
+                    st.session_state.batch_stats = {}
                     st.rerun()
         render_grid()
 
