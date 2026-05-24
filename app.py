@@ -2,482 +2,349 @@ import streamlit as st
 import io
 import time
 import base64
+import pandas as pd
 from PIL import Image
 from typing import List, Dict, Optional
 
-from config import APP_NAMES, APP_TO_COLUMN
+from config import APP_NAMES
 from db import DatabaseManager
-from pruning import recursive_prune
 
 st.set_page_config(
-    page_title="Smart Hashtag Generator V2.0",
+    page_title="HashTag AI",
     page_icon="#",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ===================== SESSION STATE =====================
-INIT_STATE = {
-    "app_name": None,
-    "batch_mode": False,
-    "images_data": [],          # list of {name, bytes, result}
-    "analysis_done": False,
-    "exact_matches": [],
-    "proposed_objects": [],
-    "proposed_styles": [],
-    "proposed_colors": [],
-    "result_text": "",
-    "added_proposals": set(),
-    "parent_map": {},
-    "db_connected": False,
-    "is_mock_ai": True,
-    "batch_results": [],        # [{filename, matches, objects, styles, colors}]
-}
+def init_state():
+    defaults = {
+        "app_name": None,
+        "images": [],
+        "results": {},
+        "processing": False,
+        "db_connected": False,
+        "is_mock": True,
+        "dropdown_options": {"object_1": [], "object_2": [], "style": [], "color": []},
+        "start_number": 1,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-for k, v in INIT_STATE.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+init_state()
 
-
-def get_db() -> Optional[DatabaseManager]:
+# ===================== DB HELPERS =====================
+def get_db():
     if "db" not in st.session_state:
         db = DatabaseManager()
         st.session_state.db_connected = db.connect()
         st.session_state.db = db
     return st.session_state.db
 
-
-def load_tags_for_app(app_name: str):
+def load_dropdown_options(app_name: str):
     db = get_db()
-    if db and st.session_state.db_connected:
-        tags = db.get_all_tags(app_name)
-        st.session_state.parent_map = db.get_parent_map(app_name)
-        return tags
-    st.session_state.parent_map = {}
-    return []
+    opts = {"object_1": [], "object_2": [], "style": [], "color": [], "mood": ["none"], "gender": ["none"]}
+    if not db or not st.session_state.db_connected:
+        return opts
+
+    tags = db.get_all_tags(app_name)
+    parent_map = {}
+    for t in tags:
+        parent_map[t["hashtag"]] = t.get("parent_hashtag") or None
+
+    level1 = set()
+    level2 = set()
+    for t in tags:
+        cat = t.get("category", "")
+        h = t["hashtag"]
+        p = parent_map.get(h)
+        if cat == "object":
+            if p is None:
+                level1.add(h)
+            else:
+                level2.add(h)
+
+    opts["object_1"] = sorted(level1)
+    opts["object_2"] = sorted(level2)
+    opts["style"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "style"))
+    opts["color"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "color"))
+    st.session_state.dropdown_options = opts
+    return opts
 
 
-def run_single_analysis(image_bytes: bytes, app_name: str):
-    from ai_engine import AIVisionEngine
+# ===================== AI ENGINE =====================
+def analyze_image(image_bytes: bytes, app_name: str):
+    from config import AI_API_URL, AI_API_KEY, VISION_SYSTEM_PROMPT
+    import httpx
 
     db = get_db()
+    existing_tags = ""
     if db and st.session_state.db_connected:
-        tags = db.get_tag_list(app_name)
-        existing_str = ", ".join(tags)
-        st.session_state.parent_map = db.get_parent_map(app_name)
-    else:
-        existing_str = ""
-        st.session_state.parent_map = {}
+        existing_tags = ", ".join(db.get_tag_list(app_name))
 
-    engine = AIVisionEngine()
+    st.session_state.is_mock = not (AI_API_KEY and AI_API_URL)
 
-    if not engine.api_key or not engine.api_url:
-        st.session_state.is_mock_ai = True
-    else:
-        st.session_state.is_mock_ai = False
+    if st.session_state.is_mock:
+        import random
+        opts = st.session_state.dropdown_options
+        return {
+            "object_1": random.choice(opts["object_1"]) if opts["object_1"] else "none",
+            "object_2": random.choice(opts["object_2"]) if opts["object_2"] else "none",
+            "style": random.choice(opts["style"]) if opts["style"] else "none",
+            "color": random.choice(opts["color"]) if opts["color"] else "none",
+            "mood": "none",
+            "gender": "none",
+        }
 
-    result = engine.analyze_image(image_bytes, existing_str)
+    prompt = f"""Analyze this image. Return ONLY JSON:
+{{
+  "object_1": "level1_object",
+  "object_2": "level2_object",
+  "style": "art_style",
+  "color": "dominant_color",
+  "mood": "none",
+  "gender": "none"
+}}
+Use these as reference: {existing_tags[:500]}"""
 
-    if result is None:
-        return None
+    try:
+        import base64
+        b64 = base64.b64encode(image_bytes).decode()
+        payload = {
+            "model": "vision-v1",
+            "messages": [
+                {"role": "system", "content": VISION_SYSTEM_PROMPT},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                ]}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500,
+            "response_format": {"type": "json_object"}
+        }
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(AI_API_URL, json=payload, headers={
+                "Authorization": f"Bearer {AI_API_KEY}",
+                "Content-Type": "application/json"
+            })
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            import json
+            result = json.loads(content)
+            return {
+                "object_1": result.get("object_1", "none"),
+                "object_2": result.get("object_2", "none"),
+                "style": result.get("style", "none"),
+                "color": result.get("color", "none"),
+                "mood": "none",
+                "gender": "none",
+            }
+    except Exception:
+        return {"object_1": "none", "object_2": "none", "style": "none", "color": "none", "mood": "none", "gender": "none"}
 
-    exact = result.get("exact_matches", [])
-    if st.session_state.parent_map:
-        exact = recursive_prune(exact, st.session_state.parent_map)
 
-    return {
-        "exact_matches": exact,
-        "proposed_objects": result.get("proposed_objects", []),
-        "proposed_styles": result.get("proposed_styles", []),
-        "proposed_colors": result.get("proposed_colors", []),
-    }
-
-
-def insert_proposal(hashtag: str, category: str, app_name: str) -> bool:
-    db = get_db()
-    if db and st.session_state.db_connected:
-        ok, _ = db.insert_new_tag(hashtag, category, app_name)
-        return ok
-    return True
+# ===================== EXPORT =====================
+def export_results(fmt="csv"):
+    rows = []
+    for img in st.session_state.images:
+        r = st.session_state.results.get(img["name"], {})
+        rows.append({
+            "STT": img.get("stt", ""),
+            "Filename": img["name"],
+            "Object 1": r.get("object_1", ""),
+            "Object 2": r.get("object_2", ""),
+            "Style": r.get("style", ""),
+            "Color": r.get("color", ""),
+            "Mood": r.get("mood", "none"),
+            "Gender": r.get("gender", "none"),
+            "Status": r.get("status", "pending"),
+        })
+    df = pd.DataFrame(rows)
+    if fmt == "csv":
+        return df.to_csv(index=False).encode("utf-8-sig"), "results.csv", "text/csv"
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue(), "results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 # ===================== UI: SIDEBAR =====================
 def render_sidebar():
     with st.sidebar:
-        st.markdown("### Cau hinh")
+        st.markdown("### ⚙️ Cấu hình")
+
+        st.selectbox("Chon App", options=["-- Select --"] + APP_NAMES, key="app_sel")
+        if st.session_state.app_sel != "-- Select --":
+            st.session_state.app_name = st.session_state.app_sel
+        else:
+            st.session_state.app_name = None
+
+        st.number_input("Bat dau tu so", min_value=1, value=st.session_state.start_number, key="start_num")
+        st.session_state.start_number = st.session_state.start_num
+
+        st.divider()
+        st.markdown("### 📁 Nguon anh")
+
+        uploaded = st.file_uploader("Upload anh", type=["jpg","jpeg","png","webp","gif"],
+                                     accept_multiple_files=True, key="sidebar_upload")
+
+        if uploaded:
+            st.session_state.images = []
+            for i, uf in enumerate(uploaded):
+                img = Image.open(uf)
+                buf = io.BytesIO()
+                img.save(buf, format=img.format or "PNG")
+                st.session_state.images.append({
+                    "name": uf.name,
+                    "bytes": buf.getvalue(),
+                    "size_kb": len(buf.getvalue()) / 1024,
+                    "stt": st.session_state.start_number + i,
+                })
+            st.success(f"Da chon {len(uploaded)} anh")
+
+        if st.button("▶ Chay hashtag", type="primary", use_container_width=True,
+                      disabled=not st.session_state.app_name or not st.session_state.images):
+            run_batch()
+
+        if st.session_state.results:
+            st.divider()
+            fmt = st.radio("Export", ["CSV", "Excel"], horizontal=True)
+            data, fname, mime = export_results(fmt.lower())
+            st.download_button("Tai xuong", data, file_name=fname, mime=mime, use_container_width=True)
+
+        st.divider()
         db = get_db()
-
-        col_a, col_b = st.columns([3, 2])
-        with col_a:
-            if st.session_state.db_connected:
-                st.success("Supabase: OK")
-            else:
-                st.warning("Supabase: Offline")
-        with col_b:
-            if st.button("Test DB", key="test_db_btn"):
-                if st.session_state.db_connected:
-                    try:
-                        tags = db.get_all_tags("W1")
-                        st.toast(f"DB OK: {len(tags)} tags for W1", icon="✅")
-                    except Exception as e:
-                        st.toast(f"DB Err: {e}", icon="❌")
-                else:
-                    st.toast("Chua cau hinh SUPABASE_URL/KEY", icon="⚠️")
-
-        if st.session_state.is_mock_ai:
-            st.info("AI: Mock mode (chua co key)")
+        if st.session_state.db_connected:
+            st.success("Supabase: OK")
+        else:
+            st.warning("Supabase: Offline")
+        if st.session_state.is_mock:
+            st.info("AI: Mock mode")
         else:
             st.success("AI: Live")
 
-        st.divider()
-        st.caption("Smart Hashtag Generator V2.0")
-        st.caption("SiinJiuYunShan")
 
-
-# ===================== UI: LEFT PANEL =====================
-def render_left_panel():
-    st.markdown("### Input & Controls")
-
-    # --- Mode toggle ---
-    mode = st.radio(
-        "Che do xu ly",
-        options=["Single Image", "Batch Folder"],
-        horizontal=True,
-        key="mode_radio"
-    )
-    st.session_state.batch_mode = (mode == "Batch Folder")
-
-    # --- App selector ---
-    prev_app = st.session_state.app_name
-    app_choice = st.selectbox(
-        "Chon Nen Tang (App)",
-        options=["-- Select App --"] + APP_NAMES,
-        key="app_selector"
-    )
-
-    if app_choice == "-- Select App --":
-        st.session_state.app_name = None
-    else:
-        st.session_state.app_name = app_choice
-        if app_choice != prev_app:
-            st.session_state.analysis_done = False
-            st.session_state.added_proposals = set()
-            st.session_state.batch_results = []
-
+# ===================== BATCH PROCESSING =====================
+def run_batch():
     app_name = st.session_state.app_name
+    load_dropdown_options(app_name)
 
-    if st.session_state.batch_mode:
-        render_batch_upload(app_name)
-    else:
-        render_single_upload(app_name)
+    st.session_state.processing = True
+    st.session_state.results = {}
 
-    # --- DB Stats ---
-    if app_name and st.session_state.db_connected:
-        with st.expander("DB Stats"):
-            tags = load_tags_for_app(app_name)
-            cats = {"object": 0, "style": 0, "color": 0}
-            for t in tags:
-                c = t.get("category", "")
-                if c in cats:
-                    cats[c] += 1
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Object", cats["object"])
-            c2.metric("Style", cats["style"])
-            c3.metric("Color", cats["color"])
-            st.caption(f"Total: {len(tags)} tags for {app_name}")
+    progress = st.progress(0)
+    status = st.empty()
+
+    for i, img in enumerate(st.session_state.images):
+        status.text(f"Dang xu ly {i+1}/{len(st.session_state.images)}: {img['name']}")
+        result = analyze_image(img["bytes"], app_name)
+        result["status"] = "done"
+        st.session_state.results[img["name"]] = result
+        progress.progress((i + 1) / len(st.session_state.images))
+
+    status.text(f"Hoan thanh! {len(st.session_state.images)} anh.")
+    st.session_state.processing = False
+    st.rerun()
 
 
-def render_single_upload(app_name):
-    uploaded = st.file_uploader(
-        "Tai anh len (jpg, png, webp)",
-        type=["jpg", "jpeg", "png", "webp"],
-        disabled=(app_name is None),
-        key="single_uploader"
-    )
+# ===================== UI: MAIN GRID =====================
+def render_card(img, idx):
+    r = st.session_state.results.get(img["name"], {})
+    status = r.get("status", "pending")
+    opts = st.session_state.dropdown_options
 
-    if uploaded is not None:
-        image = Image.open(uploaded)
-        buf = io.BytesIO()
-        fmt = image.format or "PNG"
-        image.save(buf, format=fmt)
-        st.session_state.images_data = [{
-            "name": uploaded.name,
-            "bytes": buf.getvalue(),
-            "image": image
-        }]
-        st.image(image, caption=uploaded.name, use_container_width=True)
-    else:
-        st.session_state.images_data = []
+    with st.container():
+        st.markdown(f"""
+        <div style="border:1px solid #2a2a3a;border-radius:10px;padding:12px;margin-bottom:10px;background:#0d1117;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="color:#8b949e;font-size:11px;">{img['name'][:20]}...</span>
+                <span style="color:#58a6ff;font-size:11px;">{img['size_kb']:.1f}KB</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    can_run = app_name is not None and len(st.session_state.images_data) > 0
+        st.image(Image.open(io.BytesIO(img["bytes"])), use_container_width=True)
 
-    if st.button("Phan Tich Hashtag", type="primary", disabled=not can_run,
-                 use_container_width=True, key="analyze_single_btn"):
-        with st.spinner(f"AI dang phan tich anh... (Mock: {st.session_state.is_mock_ai})"):
-            st.session_state.added_proposals = set()
-            st.session_state.analysis_done = False
-            result = run_single_analysis(st.session_state.images_data[0]["bytes"], app_name)
-            if result:
-                st.session_state.exact_matches = result["exact_matches"]
-                st.session_state.proposed_objects = result["proposed_objects"]
-                st.session_state.proposed_styles = result["proposed_styles"]
-                st.session_state.proposed_colors = result["proposed_colors"]
-                st.session_state.result_text = (
-                    ", ".join(result["exact_matches"])
-                    if result["exact_matches"]
-                    else "(No exact matches - check proposals below)"
-                )
-                st.session_state.analysis_done = True
-            else:
-                st.error("AI analysis failed.")
-            st.rerun()
+        st.markdown(f"**STT: {img['stt']}** | CLIP (OpenAI) | {'✅ Done' if status == 'done' else '⏳ Pending'}")
 
+        if status == "done":
+            cols = st.columns(2)
+            with cols[0]:
+                r["object_1"] = st.selectbox("Object 1", options=["none"] + opts["object_1"],
+                                              index=max(0, (["none"] + opts["object_1"]).index(r.get("object_1","none"))),
+                                              key=f"o1_{idx}", label_visibility="collapsed")
+                r["object_2"] = st.selectbox("Object 2", options=["none"] + opts["object_2"],
+                                              index=max(0, (["none"] + opts["object_2"]).index(r.get("object_2","none"))),
+                                              key=f"o2_{idx}", label_visibility="collapsed")
+                r["style"] = st.selectbox("Style", options=["none"] + opts["style"],
+                                           index=max(0, (["none"] + opts["style"]).index(r.get("style","none"))),
+                                           key=f"sty_{idx}", label_visibility="collapsed")
+            with cols[1]:
+                r["color"] = st.selectbox("Color", options=["none"] + opts["color"],
+                                           index=max(0, (["none"] + opts["color"]).index(r.get("color","none"))),
+                                           key=f"clr_{idx}", label_visibility="collapsed")
+                r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
+                r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
 
-def render_batch_upload(app_name):
-    uploaded_files = st.file_uploader(
-        "Tai nhieu anh (jpg, png, webp)",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        disabled=(app_name is None),
-        key="batch_uploader"
-    )
+            st.session_state.results[img["name"]] = r
 
-    can_run = False
-    if uploaded_files:
-        st.session_state.images_data = []
-        for uf in uploaded_files:
-            image = Image.open(uf)
-            buf = io.BytesIO()
-            fmt = image.format or "PNG"
-            image.save(buf, format=fmt)
-            st.session_state.images_data.append({
-                "name": uf.name,
-                "bytes": buf.getvalue(),
-                "image": image
-            })
-        st.caption(f"Da chon {len(uploaded_files)} anh")
-        can_run = app_name is not None and len(uploaded_files) > 0
-
-        with st.expander("Preview anh"):
-            cols = st.columns(3)
-            for i, img_data in enumerate(st.session_state.images_data):
-                with cols[i % 3]:
-                    st.image(img_data["image"], caption=img_data["name"], use_container_width=True)
-    else:
-        st.session_state.images_data = []
-
-    if st.button("Phan Tich TAT CA Anh (Batch)", type="primary", disabled=not can_run,
-                 use_container_width=True, key="analyze_batch_btn"):
-        st.session_state.batch_results = []
-        st.session_state.analysis_done = False
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        total = len(st.session_state.images_data)
-        for i, img_data in enumerate(st.session_state.images_data):
-            status_text.text(f"Dang xu ly {i+1}/{total}: {img_data['name']}...")
-            result = run_single_analysis(img_data["bytes"], app_name)
-            if result:
-                st.session_state.batch_results.append({
-                    "filename": img_data["name"],
-                    "matches": result["exact_matches"],
-                    "objects": result["proposed_objects"],
-                    "styles": result["proposed_styles"],
-                    "colors": result["proposed_colors"],
-                })
-            else:
-                st.session_state.batch_results.append({
-                    "filename": img_data["name"],
-                    "matches": [],
-                    "objects": [],
-                    "styles": [],
-                    "colors": [],
-                    "error": True
-                })
-            progress_bar.progress((i + 1) / total)
-
-        status_text.text(f"Hoan thanh! Da xu ly {total} anh.")
-        st.session_state.analysis_done = True
-        st.rerun()
+            if st.button("▶", key=f"re_{idx}", use_container_width=True):
+                new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                new_r["status"] = "done"
+                st.session_state.results[img["name"]] = new_r
+                st.rerun()
 
 
-# ===================== UI: RIGHT PANEL =====================
-@st.fragment
-def render_right_panel():
-    if st.session_state.batch_mode and st.session_state.batch_results:
-        render_batch_results()
-    else:
-        render_single_results()
-
-
-def render_single_results():
-    c1, c2 = st.columns([5, 1])
-    with c1:
-        st.markdown("### Ket qua Hashtag")
-    with c2:
-        if st.session_state.analysis_done and st.session_state.result_text:
-            if st.button("Copy All", use_container_width=True, key="copy_btn"):
-                st.toast("Copy text ben duoi de sao chep!", icon="📋")
-
-    if not st.session_state.analysis_done:
-        st.info("Chon App, tai anh, roi nhan [Phan Tich Hashtag] de bat dau.")
-        if st.session_state.is_mock_ai:
-            st.caption("⚠️ Dang chay o Mock Mode. Them AI_API_KEY vao secrets de phan tich anh thuc te.")
+def render_grid():
+    if not st.session_state.images:
+        st.info("Chua co anh. Upload anh o sidebar.")
         return
 
-    # Mock mode banner
-    if st.session_state.is_mock_ai:
-        st.warning("MOCK MODE: Ket qua la du lieu mau. Them AI_API_KEY de phan tich thuc te.")
-
-    # Result text area
-    rt = st.session_state.result_text
-    st.text_area(
-        "Hashtags", value=rt, height=120,
-        key="result_text_area", label_visibility="collapsed"
-    )
-    if rt and rt != "(No exact matches - check proposals below)":
-        count = len([h for h in rt.split(", ") if h.strip()])
-        st.caption(f"Tim thay {count} hashtag (da qua thuat toan cat tia)")
-
-    # Proposals
-    obj = st.session_state.proposed_objects
-    sty = st.session_state.proposed_styles
-    clr = st.session_state.proposed_colors
-
-    if not obj and not sty and not clr:
-        if st.session_state.analysis_done:
-            st.caption("AI khong co de xuat moi.")
-        return
-
-    st.markdown("---")
-    st.markdown("### AI De Xuat (Smart Proposals)")
-    st.caption("Click [+] de them hashtag vao Database va Text Area")
-
-    col_obj, col_sty, col_clr = st.columns(3)
-
-    def proposal_block(col, title, items, category, emoji):
-        with col:
-            st.markdown(f"**{emoji} {title}** ({len(items)})")
-            if not items:
-                st.caption("-- Khong co --")
-                return
-            for item in items:
-                added = item in st.session_state.added_proposals
-                b1, b2 = st.columns([5, 1])
-                with b1:
-                    st.code(item, language=None)
-                with b2:
-                    if added:
-                        st.button("✓", key=f"done_{item}_{category}",
-                                  disabled=True, use_container_width=True)
-                    else:
-                        if st.button("+", key=f"add_{item}_{category}",
-                                     use_container_width=True, type="primary"):
-                            insert_proposal(item, category, st.session_state.app_name)
-                            st.session_state.added_proposals.add(item)
-                            cur = st.session_state.result_text
-                            if "(No exact matches" in cur:
-                                st.session_state.result_text = item
-                            else:
-                                st.session_state.result_text = (
-                                    cur + ", " + item if cur else item
-                                )
-                            st.toast(
-                                f"Da them [{item}] vao App [{st.session_state.app_name}]",
-                                icon="✅"
-                            )
-                            st.rerun(scope="fragment")
-
-    proposal_block(col_obj, "Object Moi", obj, "object", "📦")
-    proposal_block(col_sty, "Style Moi", sty, "style", "🎨")
-    proposal_block(col_clr, "Color Moi", clr, "color", "🌈")
-
-
-def render_batch_results():
-    st.markdown("### Ket qua Batch")
-
-    results = st.session_state.batch_results
-    total_matches = sum(len(r["matches"]) for r in results)
-    total_objects = sum(len(r["objects"]) for r in results)
-    total_styles = sum(len(r["styles"]) for r in results)
-    total_colors = sum(len(r["colors"]) for r in results)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Anh da xu ly", len(results))
-    c2.metric("Matches", total_matches)
-    c3.metric("Object de xuat", total_objects)
-    c4.metric("Style de xuat", total_styles)
-
-    # Download button
-    csv_lines = ["filename,matches,proposed_objects,proposed_styles,proposed_colors"]
-    for r in results:
-        csv_lines.append(
-            f'"{r["filename"]}","{",".join(r["matches"])}","{",".join(r["objects"])}","{",".join(r["styles"])}","{",".join(r["colors"])}"'
-        )
-    csv_data = "\n".join(csv_lines)
-    b64 = base64.b64encode(csv_data.encode("utf-8")).decode()
-    st.download_button(
-        "Tai xuong CSV", data=csv_data,
-        file_name="batch_hashtag_results.csv",
-        mime="text/csv", use_container_width=True
-    )
-
-    st.divider()
-
-    # Per-image results
-    for i, r in enumerate(results):
-        with st.expander(f"📷 {r['filename']} ({len(r['matches'])} matches, {len(r['objects'])} objects, {len(r['styles'])} styles, {len(r['colors'])} colors)"):
-            if r.get("error"):
-                st.error("Failed to analyze this image")
-            else:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown("**Matches:**")
-                    st.code(", ".join(r["matches"]) if r["matches"] else "(none)")
-                    st.markdown("**Proposed Objects:**")
-                    st.code(", ".join(r["objects"]) if r["objects"] else "(none)")
-                with col_b:
-                    st.markdown("**Proposed Styles:**")
-                    st.code(", ".join(r["styles"]) if r["styles"] else "(none)")
-                    st.markdown("**Proposed Colors:**")
-                    st.code(", ".join(r["colors"]) if r["colors"] else "(none)")
-
-                # Combine all for this image
-                all_tags = r["matches"] + r["objects"] + r["styles"] + r["colors"]
-                tag_text = ", ".join(all_tags)
-                st.text_area(f"Copy tags for {r['filename']}", value=tag_text,
-                             key=f"batch_copy_{i}", height=70, label_visibility="collapsed")
-
-
-# ===================== CSS =====================
-CUSTOM_CSS = """
-<style>
-    .main-header { font-size: 2rem; font-weight: 700; color: #1F4E79; margin-bottom: 0; }
-    .sub-header { font-size: 0.9rem; color: #808080; margin-top: -0.5rem; }
-    .stButton > button { border-radius: 6px; transition: all 0.2s; }
-    div[data-testid="stToast"] > div { font-size: 0.9rem; }
-</style>
-"""
+    n = len(st.session_state.images)
+    cols_per_row = 4
+    for i in range(0, n, cols_per_row):
+        row_cols = st.columns(cols_per_row)
+        for j in range(cols_per_row):
+            idx = i + j
+            if idx < n:
+                with row_cols[j]:
+                    render_card(st.session_state.images[idx], idx)
 
 
 # ===================== MAIN =====================
 def main():
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    render_sidebar()
+    st.markdown("""
+    <style>
+        body { background: #0d1117; color: #c9d1d9; }
+        .stApp { background: #0d1117; }
+        [data-testid="stSidebar"] { background: #161b22; }
+        .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+        .stButton > button { background: #238636; color: white; border: none; }
+        .stDownloadButton > button { background: #1f6feb; color: white; border: none; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    st.markdown('<p class="main-header"># Smart Hashtag Generator V2.0</p>',
-                unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">AI Vision + Supabase | SiinJiuYunShan</p>',
-                unsafe_allow_html=True)
+    st.markdown("#  HashTag AI")
+    st.caption("CLIP (OpenAI) | SiinJiuYunShan")
     st.divider()
 
-    left, right = st.columns([3, 7])
+    left, right = st.columns([1, 3])
 
     with left:
-        render_left_panel()
+        render_sidebar()
 
     with right:
-        render_right_panel()
+        st.markdown(f"### KET QUA  {len(st.session_state.images)} anh")
+        if st.session_state.images:
+            c1, c2 = st.columns([5, 1])
+            with c2:
+                if st.button("🗑 Xoa toan bo anh", use_container_width=True):
+                    st.session_state.images = []
+                    st.session_state.results = {}
+                    st.rerun()
+        render_grid()
 
 
 if __name__ == "__main__":
