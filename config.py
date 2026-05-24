@@ -22,10 +22,10 @@ SUPABASE_KEY = _get_config("SUPABASE_KEY")
 SUPABASE_TABLE = _get_config("SUPABASE_TABLE", "core_hashtags")
 
 # --- OpenCode Vision API Configuration ---
-# OpenCode Go: Qwen3.6 Plus uses Anthropic Messages format
-AI_API_URL = _get_config("AI_API_URL", "https://opencode.ai/zen/go/v1/messages")
+# OpenCode Go: Qwen3.6 Plus works with OpenAI-compatible endpoint (not Anthropic)
+AI_API_URL = _get_config("AI_API_URL", "https://opencode.ai/zen/go/v1/chat/completions")
 AI_API_KEY = _get_config("AI_API_KEY")
-AI_API_TYPE = _get_config("AI_API_TYPE", "anthropic")  # "anthropic" or "openai"
+AI_API_TYPE = _get_config("AI_API_TYPE", "openai")  # "openai" or "anthropic"
 AI_MODEL = _get_config("AI_MODEL", "qwen3.6-plus")
 
 # --- Application Constants ---
