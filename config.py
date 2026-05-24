@@ -28,7 +28,25 @@ AI_API_KEY = os.environ.get(
 
 # --- Application Constants ---
 APP_NAMES = ["W1", "3D1", "3D2", "3D3", "Zipper", "Charging"]
-APP_COLUMNS = [a.lower() for a in APP_NAMES]
+
+# Map app name -> DB column name (Postgres cannot have columns starting with digits)
+APP_TO_COLUMN = {
+    "W1": "w1",
+    "3D1": "d3d1",
+    "3D2": "d3d2",
+    "3D3": "d3d3",
+    "Zipper": "zipper",
+    "Charging": "charging",
+}
+COLUMN_TO_APP = {v: k for k, v in APP_TO_COLUMN.items()}
+APP_COLUMNS = list(APP_TO_COLUMN.values())
+
+def app_to_col(app_name: str) -> str:
+    return APP_TO_COLUMN.get(app_name, app_name.lower())
+
+def col_to_app(col_name: str) -> str:
+    return COLUMN_TO_APP.get(col_name, col_name)
+
 CATEGORIES = ["object", "style", "color"]
 
 # --- AI Vision Prompt (Engineering) ---

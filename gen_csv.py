@@ -79,10 +79,11 @@ for app, fn in FILES.items():
     wb.close()
 
 rows_out = []
+COL_MAP = {'W1': 'w1', '3D1': 'd3d1', '3D2': 'd3d2', '3D3': 'd3d3', 'Zipper': 'zipper', 'Charging': 'charging'}
 for h, info in master.items():
     row = {'hashtag': h, 'parent_hashtag': info['parent'] or '', 'category': info['category']}
     for a in APPS:
-        row[a.lower()] = a in info['apps']
+        row[COL_MAP[a]] = a in info['apps']
     rows_out.append(row)
 
 df = pd.DataFrame(rows_out)
@@ -93,7 +94,7 @@ cat_ord = {'object': 1, 'style': 2, 'color': 3}
 df['_s'] = df['category'].map(cat_ord)
 df = df.sort_values(['_s', 'hashtag']).drop(columns=['_s'])
 
-cols = ['hashtag', 'parent_hashtag', 'category', 'w1', '3d1', '3d2', '3d3', 'zipper', 'charging']
+cols = ['hashtag', 'parent_hashtag', 'category', 'w1', 'd3d1', 'd3d2', 'd3d3', 'zipper', 'charging']
 df = df[cols]
 
 df.to_csv(OUT, index=False, encoding='utf-8-sig')

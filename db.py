@@ -3,7 +3,7 @@ import io
 from typing import List, Dict, Optional, Tuple
 from supabase import create_client, Client
 
-from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_TABLE, APP_COLUMNS, APP_NAMES
+from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_TABLE, APP_COLUMNS, APP_NAMES, app_to_col, col_to_app
 
 
 class DatabaseManager:
@@ -27,7 +27,7 @@ class DatabaseManager:
 
     def get_all_tags(self, app_filter: str) -> List[Dict]:
         """Fetch all hashtags filtered by app (boolean column = TRUE)."""
-        col = app_filter.lower()
+        col = app_to_col(app_filter)
         if col not in APP_COLUMNS:
             return []
 
@@ -65,7 +65,7 @@ class DatabaseManager:
         if not self.connected:
             return False, "Database not connected"
 
-        col = app_name.lower()
+        col = app_to_col(app_name)
         if col not in APP_COLUMNS:
             return False, f"Invalid app: {app_name}"
 
