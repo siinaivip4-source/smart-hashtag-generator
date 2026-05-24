@@ -387,7 +387,7 @@ def render_card(img, idx):
 
     # Status badge
     if status == "done":
-        badge = '<span style="color:#3fb950;font-size:10px;">● Đã xong</span>'
+        badge = '<span style="color:#3fb950;font-size:10px;">● Đã hoàn thành</span>'
     elif status == "processing":
         badge = '<span style="color:#d29922;font-size:10px;">● Đang xử lý...</span>'
     elif status == "error":
@@ -395,11 +395,13 @@ def render_card(img, idx):
     else:
         badge = '<span style="color:#8b949e;font-size:10px;">○ Chưa chạy</span>'
 
+    border_color = "#8b5cf6" if status == "processing" else "#30363d"
+
     with st.container():
         # Header bar
         st.markdown(f"""
-        <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
-            <span style="color:#8b949e;font-size:10px;">{img['name'][:18]}...</span>
+        <div style="background:#161b22;border:1px solid {border_color};border-radius:8px;padding:6px 10px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:#8b949e;font-size:10px;">{img['name'][:22]}</span>
             <span style="color:#58a6ff;font-size:10px;">{img['size_kb']:.0f}KB</span>
         </div>
         """, unsafe_allow_html=True)
@@ -408,69 +410,75 @@ def render_card(img, idx):
         st.image(Image.open(io.BytesIO(img["bytes"])), use_container_width=True)
 
         # Info line
-        st.markdown(f"**STT:{img['stt']}** | Qwen3.6 | {badge}", unsafe_allow_html=True)
+        st.markdown(f"**STT:{img['stt']}** | CLIP (OPENAI) | {badge}", unsafe_allow_html=True)
 
         if status == "done":
             # Show suggestion badges
             if r.get("_ai_suggested_obj") or r.get("_ai_suggested_style") or r.get("_ai_suggested_color"):
-                st.caption("🤖 AI tự đề xuất hashtag mới (không có trong DB)")
-            if r.get("_fallback_obj"):
-                st.caption("⚠️ Không nhận diện được Object — lấy từ DB")
+                st.caption(" AI tự đề xuất hashtag mới (không có trong DB)")
 
-            # OBJECT section
-            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;">🔹 OBJECT</div>', unsafe_allow_html=True)
+            # Row 1: OBJECT 1 | OBJECT 2
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">OBJECT 1 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; OBJECT 2</div>', unsafe_allow_html=True)
             o1_opts = ["none"] + opts["object_1"]
-            r["object_1"] = st.selectbox("Object 1", options=o1_opts,
-                                          index=safe_index(o1_opts, r.get("object_1","none")),
-                                          key=f"o1_{idx}", label_visibility="collapsed")
             o2_opts = ["none"] + opts["object_2"]
-            r["object_2"] = st.selectbox("Object 2", options=o2_opts,
-                                          index=safe_index(o2_opts, r.get("object_2","none")),
-                                          key=f"o2_{idx}", label_visibility="collapsed")
-            o3_opts = ["none"] + opts["object_3"]
-            r["object_3"] = st.selectbox("Object 3", options=o3_opts,
-                                          index=safe_index(o3_opts, r.get("object_3","none")),
-                                          key=f"o3_{idx}", label_visibility="collapsed")
+            c1, c2 = st.columns(2)
+            with c1:
+                r["object_1"] = st.selectbox("", options=o1_opts,
+                                              index=safe_index(o1_opts, r.get("object_1","none")),
+                                              key=f"o1_{idx}", label_visibility="collapsed")
+            with c2:
+                r["object_2"] = st.selectbox("", options=o2_opts,
+                                              index=safe_index(o2_opts, r.get("object_2","none")),
+                                              key=f"o2_{idx}", label_visibility="collapsed")
 
-            # STYLE/COLOR section
-            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;"> STYLE / COLOR</div>', unsafe_allow_html=True)
+            # Row 2: STYLE | COLOR | MOOD
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">STYLE &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; COLOR &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; MOOD</div>', unsafe_allow_html=True)
             s_opts = ["none"] + opts["style"]
-            r["style"] = st.selectbox("Style", options=s_opts,
-                                       index=safe_index(s_opts, r.get("style","none")),
-                                       key=f"sty_{idx}", label_visibility="collapsed")
             c_opts = ["none"] + opts["color"]
-            r["color"] = st.selectbox("Color", options=c_opts,
-                                       index=safe_index(c_opts, r.get("color","none")),
-                                       key=f"clr_{idx}", label_visibility="collapsed")
-            r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
-            r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                r["style"] = st.selectbox("", options=s_opts,
+                                           index=safe_index(s_opts, r.get("style","none")),
+                                           key=f"sty_{idx}", label_visibility="collapsed")
+            with c2:
+                r["color"] = st.selectbox("", options=c_opts,
+                                           index=safe_index(c_opts, r.get("color","none")),
+                                           key=f"clr_{idx}", label_visibility="collapsed")
+            with c3:
+                r["mood"] = st.selectbox("", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
+
+            # Row 3: GENDER
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">GENDER</div>', unsafe_allow_html=True)
+            r["gender"] = st.selectbox("", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
 
             st.session_state.results[img["name"]] = r
 
-            # Buttons: re-analyze + suggest
-            bc1, bc2 = st.columns(2)
+            # Bottom bar
+            bc1, bc2 = st.columns([4, 1])
             with bc1:
-                if st.button("🔄 Chay lai", key=f"re_{idx}", use_container_width=True):
+                st.caption("Phân loại xong")
+            with bc2:
+                if st.button("▶", key=f"re_{idx}"):
                     st.session_state.results[img["name"]] = {"status": "processing"}
                     st.rerun()
                     new_r = analyze_image(img["bytes"], st.session_state.app_name)
                     new_r["status"] = "done"
                     st.session_state.results[img["name"]] = new_r
                     st.rerun()
-            with bc2:
-                if st.button("✨ Goi y", key=f"sug_{idx}", use_container_width=True):
-                    suggest_missing(img, idx)
-                    st.rerun()
 
         elif status == "pending":
-            st.caption("Hashtag sẽ xuất hiện ở đây sau khi chạy.")
-            if st.button("▶", key=f"run_{idx}", use_container_width=True):
-                st.session_state.results[img["name"]] = {"status": "processing"}
-                st.rerun()
-                new_r = analyze_image(img["bytes"], st.session_state.app_name)
-                new_r["status"] = "done"
-                st.session_state.results[img["name"]] = new_r
-                st.rerun()
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;">Hashtag sẽ xuất hiện ở đây sau khi chạy.</div>', unsafe_allow_html=True)
+            bc1, bc2 = st.columns([4, 1])
+            with bc1:
+                st.caption("Chưa xử lý")
+            with bc2:
+                if st.button("▶", key=f"run_{idx}"):
+                    st.session_state.results[img["name"]] = {"status": "processing"}
+                    st.rerun()
+                    new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                    new_r["status"] = "done"
+                    st.session_state.results[img["name"]] = new_r
+                    st.rerun()
 
         elif status == "processing":
             with st.spinner("Đang xử lý..."):
@@ -478,13 +486,17 @@ def render_card(img, idx):
 
         elif status == "error":
             st.error(f"Lỗi: {r.get('error', 'Unknown')}")
-            if st.button("▶ Thử lại", key=f"retry_{idx}", use_container_width=True):
-                st.session_state.results[img["name"]] = {"status": "processing"}
-                st.rerun()
-                new_r = analyze_image(img["bytes"], st.session_state.app_name)
-                new_r["status"] = "done"
-                st.session_state.results[img["name"]] = new_r
-                st.rerun()
+            bc1, bc2 = st.columns([4, 1])
+            with bc1:
+                st.caption("Lỗi")
+            with bc2:
+                if st.button("▶", key=f"retry_{idx}"):
+                    st.session_state.results[img["name"]] = {"status": "processing"}
+                    st.rerun()
+                    new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                    new_r["status"] = "done"
+                    st.session_state.results[img["name"]] = new_r
+                    st.rerun()
 
 
 def render_grid():
@@ -510,10 +522,11 @@ def main():
         body { background: #0d1117; color: #c9d1d9; }
         .stApp { background: #0d1117; }
         [data-testid="stSidebar"] { background: #161b22; }
-        .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
-        .stButton > button { background: #238636; color: white; border: none; border-radius: 6px; }
+        .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; }
+        .stButton > button { background: #8b5cf6; color: white; border: none; border-radius: 6px; }
         .stDownloadButton > button { background: #1f6feb; color: white; border: none; border-radius: 6px; }
         .stSlider > div > div > div { background: #21262d; }
+        div[data-testid="stHorizontalBlock"] > div { padding: 0 2px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -531,21 +544,26 @@ def main():
         total = len(st.session_state.images)
         done = bs.get("done", 0)
         errors = bs.get("errors", 0)
-        st.markdown(f"### KẾT QUẢ  {total} ảnh · {done} xong · {errors} lỗi")
+
+        # Header bar like reference
+        hc1, hc2 = st.columns([3, 1])
+        with hc1:
+            st.markdown(f'<span style="background:#30363d;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:bold;">KẾT QUẢ</span> <span style="color:#8b949e;font-size:12px;">{total} ảnh · {done} xong · {errors} lỗi</span>', unsafe_allow_html=True)
+        with hc2:
+            if st.session_state.images:
+                if st.button("× Xóa toàn bộ ảnh", use_container_width=True, key="clear_all_btn"):
+                    st.session_state.images = []
+                    st.session_state.results = {}
+                    st.session_state.batch_stats = {"total": 0, "done": 0, "errors": 0}
+                    st.rerun()
 
         if st.session_state.images:
-            c1, c2, c3 = st.columns([4, 1, 1])
+            c1, c2 = st.columns([4, 1])
             with c2:
                 st.session_state.grid_cols = st.selectbox(
                     "Số cột", [2, 3, 4, 5], index=2,
                     key="grid_cols_sel", label_visibility="collapsed"
                 )
-            with c3:
-                if st.button("🗑 Xóa hết", use_container_width=True):
-                    st.session_state.images = []
-                    st.session_state.results = {}
-                    st.session_state.batch_stats = {"total": 0, "done": 0, "errors": 0}
-                    st.rerun()
         render_grid()
 
 
