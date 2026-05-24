@@ -1,10 +1,12 @@
 import streamlit as st
 import io
-import time
+import os
 import base64
 import pandas as pd
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
+import threading
 
 from config import APP_NAMES
 from db import DatabaseManager
@@ -20,7 +22,6 @@ st.set_page_config(
 def init_state():
     defaults = {
         "app_name": None,
-        "batch_mode": True,
         "images": [],
         "results": {},
         "processing": False,
@@ -29,13 +30,31 @@ def init_state():
         "dropdown_options": {"object_1": [], "object_2": [], "object_3": [], "style": [], "color": []},
         "start_number": 1,
         "ai_error": None,
-        "batch_stats": {},
+        "batch_stats": {"total": 0, "done": 0, "errors": 0},
+        "grid_cols": 4,
+        "max_img_size": 800,
+        "img_quality": 85,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 init_state()
+
+# ===================== IMAGE COMPRESSION =====================
+def compress_image(image_bytes: bytes, max_size: int = 800, quality: int = 85) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.width > max_size or img.height > max_size:
+        ratio = min(max_size / img.width, max_size / img.height)
+        new_w = int(img.width * ratio)
+        new_h = int(img.height * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    buf = io.BytesIO()
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
+
 
 # ===================== DB HELPERS =====================
 def get_db():
@@ -52,10 +71,6 @@ def load_dropdown_options(app_name: str):
         return opts
 
     tags = db.get_all_tags(app_name)
-    parent_map = {}
-    for t in tags:
-        parent_map[t["hashtag"]] = t.get("parent_hashtag") or None
-
     all_objects = set()
     for t in tags:
         if t.get("category") == "object":
@@ -70,17 +85,13 @@ def load_dropdown_options(app_name: str):
     return opts
 
 
-# ===================== OBJECT DEDUP LOGIC =====================
+# ===================== OBJECT DEDUP =====================
 def normalize_objects(result: dict) -> dict:
-    objects = [
-        result.get("object_1", "none"),
-        result.get("object_2", "none"),
-        result.get("object_3", "none"),
-    ]
+    objects = [result.get("object_1", "none"), result.get("object_2", "none"), result.get("object_3", "none")]
     seen = set()
     cleaned = []
     for obj in objects:
-        obj = obj.strip().lower()
+        obj = str(obj).strip().lower()
         if obj in ("none", "", "nan"):
             cleaned.append("none")
         elif obj not in seen:
@@ -88,7 +99,6 @@ def normalize_objects(result: dict) -> dict:
             cleaned.append(obj)
         else:
             cleaned.append("none")
-
     result["object_1"] = cleaned[0]
     result["object_2"] = cleaned[1]
     result["object_3"] = cleaned[2]
@@ -96,7 +106,7 @@ def normalize_objects(result: dict) -> dict:
 
 
 # ===================== AI ENGINE =====================
-def analyze_image(image_bytes: bytes, app_name: str):
+def analyze_image(image_bytes: bytes, app_name: str) -> dict:
     from ai_engine import AIVisionEngine
     from config import AI_API_KEY, AI_API_URL
 
@@ -152,40 +162,49 @@ def render_sidebar():
         st.session_state.start_number = st.session_state.start_num
 
         st.divider()
+
+        # Image compression settings
+        with st.expander("🖼 Nen anh (tăng tốc)"):
+            st.session_state.max_img_size = st.slider("Max size (px)", 400, 1200, 800, key="max_size_slider")
+            st.session_state.img_quality = st.slider("Chat luong JPEG", 50, 100, 85, key="quality_slider")
+
+        st.divider()
         st.markdown("### 📁 Nguon anh")
 
-        st.session_state.batch_mode = st.toggle("Batch Folder (nhieu anh)", value=True, key="batch_toggle")
-
-        if st.session_state.batch_mode:
-            uploaded = st.file_uploader(
-                "Tai nhieu anh cung luc", type=["jpg","jpeg","png","webp","gif"],
-                accept_multiple_files=True, key="batch_upload"
-            )
-        else:
-            uploaded = st.file_uploader(
-                "Tai 1 anh", type=["jpg","jpeg","png","webp","gif"],
-                accept_multiple_files=False, key="single_upload"
-            )
-            uploaded = [uploaded] if uploaded else []
+        # Folder-like upload
+        uploaded = st.file_uploader(
+            "Tai anh (chon nhieu file = upload folder)",
+            type=["jpg","jpeg","png","webp","gif"],
+            accept_multiple_files=True, key="folder_upload"
+        )
 
         if uploaded:
+            # Compress and store
             st.session_state.images = []
+            max_size = st.session_state.max_img_size
+            quality = st.session_state.img_quality
             for i, uf in enumerate(uploaded):
-                img = Image.open(uf)
-                buf = io.BytesIO()
-                img.save(buf, format=img.format or "PNG")
+                raw = uf.read()
+                compressed = compress_image(raw, max_size, quality)
+                img = Image.open(io.BytesIO(compressed))
                 st.session_state.images.append({
                     "name": uf.name,
-                    "bytes": buf.getvalue(),
-                    "size_kb": len(buf.getvalue()) / 1024,
+                    "bytes": compressed,
+                    "size_kb": len(compressed) / 1024,
                     "stt": st.session_state.start_number + i,
                 })
+            orig_size = sum(len(uf.read() if hasattr(uf, 'read') else b'') for uf in uploaded) / 1024
+            new_size = sum(img["size_kb"] for img in st.session_state.images)
             st.success(f"Da chon {len(uploaded)} anh")
+            if orig_size > 0:
+                st.caption(f"Nen: {orig_size:.0f}KB → {new_size:.0f}KB ({100-new_size/orig_size*100:.0f}% giam)")
 
-        if st.button("▶ Chay hashtag", type="primary", use_container_width=True,
+        # Run button
+        if st.button("▶ Chay toan bo", type="primary", use_container_width=True,
                       disabled=not st.session_state.app_name or not st.session_state.images):
-            run_batch()
+            run_batch_parallel()
 
+        # Export
         if st.session_state.results:
             st.divider()
             st.markdown("### 📤 Xuat File")
@@ -193,13 +212,12 @@ def render_sidebar():
             data, fname, mime = export_results(fmt.lower())
             st.download_button(f"Tai xuong {fmt}", data, file_name=fname, mime=mime, use_container_width=True)
 
-            if st.session_state.batch_stats:
-                with st.expander("Thong ke Batch"):
-                    bs = st.session_state.batch_stats
-                    st.metric("Anh da xu ly", bs.get("total", 0))
-                    st.metric("Co Object", bs.get("has_obj", 0))
-                    st.metric("Co Style", bs.get("has_style", 0))
-                    st.metric("Co Color", bs.get("has_color", 0))
+            bs = st.session_state.batch_stats
+            if bs.get("total", 0) > 0:
+                with st.expander("Thong ke"):
+                    st.metric("Tong", bs["total"])
+                    st.metric("Xong", bs["done"])
+                    st.metric("Loi", bs["errors"])
 
         st.divider()
         db = get_db()
@@ -211,46 +229,48 @@ def render_sidebar():
             st.info("AI: Mock mode")
         else:
             st.success("AI: Live")
-        if st.session_state.get("ai_error"):
-            st.error(f"AI Error: {st.session_state.ai_error}")
 
 
-# ===================== BATCH PROCESSING =====================
-def run_batch():
+# ===================== PARALLEL BATCH PROCESSING =====================
+def process_single(img_data: dict, app_name: str) -> tuple:
+    try:
+        result = analyze_image(img_data["bytes"], app_name)
+        result["status"] = "done"
+        return img_data["name"], result, None
+    except Exception as e:
+        return img_data["name"], {"status": "error", "error": str(e)[:200]}, str(e)[:200]
+
+def run_batch_parallel():
     app_name = st.session_state.app_name
     load_dropdown_options(app_name)
 
     st.session_state.processing = True
     st.session_state.results = {}
+    st.session_state.batch_stats = {"total": len(st.session_state.images), "done": 0, "errors": 0}
 
     progress = st.progress(0)
     status = st.empty()
 
-    stats = {"total": 0, "has_obj": 0, "has_style": 0, "has_color": 0}
+    # Parallel processing with ThreadPoolExecutor
+    max_workers = min(4, len(st.session_state.images))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_single, img, app_name): img["name"] for img in st.session_state.images}
+        for i, future in enumerate(as_completed(futures)):
+            name, result, error = future.result()
+            st.session_state.results[name] = result
+            if error:
+                st.session_state.batch_stats["errors"] += 1
+            else:
+                st.session_state.batch_stats["done"] += 1
+            progress.progress((i + 1) / len(st.session_state.images))
+            status.text(f"Da xu ly {i+1}/{len(st.session_state.images)}")
 
-    for i, img in enumerate(st.session_state.images):
-        status.text(f"Dang xu ly {i+1}/{len(st.session_state.images)}: {img['name']}")
-        result = analyze_image(img["bytes"], app_name)
-        result["status"] = "done"
-        st.session_state.results[img["name"]] = result
-
-        stats["total"] += 1
-        if result.get("object_1", "none") != "none":
-            stats["has_obj"] += 1
-        if result.get("style", "none") != "none":
-            stats["has_style"] += 1
-        if result.get("color", "none") != "none":
-            stats["has_color"] += 1
-
-        progress.progress((i + 1) / len(st.session_state.images))
-
-    st.session_state.batch_stats = stats
-    status.text(f"Hoan thanh! {stats['total']} anh, {stats['has_obj']} co Object, {stats['has_style']} co Style, {stats['has_color']} co Color")
+    status.text(f"Hoan thanh! {st.session_state.batch_stats['done']} xong, {st.session_state.batch_stats['errors']} loi")
     st.session_state.processing = False
     st.rerun()
 
 
-# ===================== UI: MAIN GRID =====================
+# ===================== UI: CARD =====================
 def safe_index(options, value):
     try:
         return options.index(value)
@@ -263,55 +283,90 @@ def render_card(img, idx):
     status = r.get("status", "pending")
     opts = st.session_state.dropdown_options
 
+    # Status badge
+    if status == "done":
+        badge = '<span style="color:#3fb950;font-size:10px;">● Đã xong</span>'
+    elif status == "processing":
+        badge = '<span style="color:#d29922;font-size:10px;">● Đang xử lý...</span>'
+    elif status == "error":
+        badge = '<span style="color:#f85149;font-size:10px;">● Lỗi</span>'
+    else:
+        badge = '<span style="color:#8b949e;font-size:10px;">○ Chưa chạy</span>'
+
     with st.container():
+        # Header bar
         st.markdown(f"""
-        <div style="border:1px solid #30363d;border-radius:10px;padding:10px;margin-bottom:8px;background:#0d1117;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                <span style="color:#8b949e;font-size:10px;">{img['name'][:22]}</span>
-                <span style="color:#58a6ff;font-size:10px;">{img['size_kb']:.1f}KB</span>
-            </div>
+        <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:#8b949e;font-size:10px;">{img['name'][:18]}...</span>
+            <span style="color:#58a6ff;font-size:10px;">{img['size_kb']:.0f}KB</span>
         </div>
         """, unsafe_allow_html=True)
 
+        # Image
         st.image(Image.open(io.BytesIO(img["bytes"])), use_container_width=True)
 
-        st.markdown(f"**STT: {img['stt']}** | Qwen3.6 | {'✅ Done' if status == 'done' else '⏳ Pending'}")
-
-        if r.get("_mock"):
-            st.caption("⚠️ MOCK MODE")
-        if r.get("error"):
-            st.error(f"AI Error: {r['error']}")
+        # Info line
+        st.markdown(f"**STT:{img['stt']}** | Qwen3.6 | {badge}", unsafe_allow_html=True)
 
         if status == "done":
-            st.markdown("**🔹 OBJECT**")
+            # OBJECT section
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;">🔹 OBJECT</div>', unsafe_allow_html=True)
             o1_opts = ["none"] + opts["object_1"]
             r["object_1"] = st.selectbox("Object 1", options=o1_opts,
                                           index=safe_index(o1_opts, r.get("object_1","none")),
-                                          key=f"o1_{idx}", label_visibility="visible")
+                                          key=f"o1_{idx}", label_visibility="collapsed")
             o2_opts = ["none"] + opts["object_2"]
             r["object_2"] = st.selectbox("Object 2", options=o2_opts,
                                           index=safe_index(o2_opts, r.get("object_2","none")),
-                                          key=f"o2_{idx}", label_visibility="visible")
+                                          key=f"o2_{idx}", label_visibility="collapsed")
             o3_opts = ["none"] + opts["object_3"]
             r["object_3"] = st.selectbox("Object 3", options=o3_opts,
                                           index=safe_index(o3_opts, r.get("object_3","none")),
-                                          key=f"o3_{idx}", label_visibility="visible")
+                                          key=f"o3_{idx}", label_visibility="collapsed")
 
-            st.markdown("**🎨 STYLE / COLOR / MOOD**")
+            # STYLE/COLOR section
+            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;"> STYLE / COLOR</div>', unsafe_allow_html=True)
             s_opts = ["none"] + opts["style"]
             r["style"] = st.selectbox("Style", options=s_opts,
                                        index=safe_index(s_opts, r.get("style","none")),
-                                       key=f"sty_{idx}", label_visibility="visible")
+                                       key=f"sty_{idx}", label_visibility="collapsed")
             c_opts = ["none"] + opts["color"]
             r["color"] = st.selectbox("Color", options=c_opts,
                                        index=safe_index(c_opts, r.get("color","none")),
-                                       key=f"clr_{idx}", label_visibility="visible")
-            r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="visible")
-            r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="visible")
+                                       key=f"clr_{idx}", label_visibility="collapsed")
+            r["mood"] = st.selectbox("Mood", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
+            r["gender"] = st.selectbox("Gender", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
 
             st.session_state.results[img["name"]] = r
 
-            if st.button("🔄 Phan tich lai", key=f"re_{idx}", use_container_width=True):
+            # Re-analyze button
+            if st.button("▶", key=f"re_{idx}", use_container_width=True):
+                st.session_state.results[img["name"]] = {"status": "processing"}
+                st.rerun()
+                new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                new_r["status"] = "done"
+                st.session_state.results[img["name"]] = new_r
+                st.rerun()
+
+        elif status == "pending":
+            st.caption("Hashtag sẽ xuất hiện ở đây sau khi chạy.")
+            if st.button("▶", key=f"run_{idx}", use_container_width=True):
+                st.session_state.results[img["name"]] = {"status": "processing"}
+                st.rerun()
+                new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                new_r["status"] = "done"
+                st.session_state.results[img["name"]] = new_r
+                st.rerun()
+
+        elif status == "processing":
+            with st.spinner("Đang xử lý..."):
+                pass
+
+        elif status == "error":
+            st.error(f"Lỗi: {r.get('error', 'Unknown')}")
+            if st.button("▶ Thử lại", key=f"retry_{idx}", use_container_width=True):
+                st.session_state.results[img["name"]] = {"status": "processing"}
+                st.rerun()
                 new_r = analyze_image(img["bytes"], st.session_state.app_name)
                 new_r["status"] = "done"
                 st.session_state.results[img["name"]] = new_r
@@ -320,7 +375,7 @@ def render_card(img, idx):
 
 def render_grid():
     if not st.session_state.images:
-        st.info("Chua co anh. Upload anh o sidebar (bat Batch Folder de tai nhieu anh).")
+        st.info("Chưa có ảnh. Upload ảnh ở sidebar (chọn nhiều file = upload folder).")
         return
 
     n = len(st.session_state.images)
@@ -344,6 +399,7 @@ def main():
         .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
         .stButton > button { background: #238636; color: white; border: none; border-radius: 6px; }
         .stDownloadButton > button { background: #1f6feb; color: white; border: none; border-radius: 6px; }
+        .stSlider > div > div > div { background: #21262d; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -357,19 +413,24 @@ def main():
         render_sidebar()
 
     with right:
-        st.markdown(f"### KET QUA  {len(st.session_state.images)} anh")
+        bs = st.session_state.batch_stats
+        total = len(st.session_state.images)
+        done = bs.get("done", 0)
+        errors = bs.get("errors", 0)
+        st.markdown(f"### KẾT QUẢ  {total} ảnh · {done} xong · {errors} lỗi")
+
         if st.session_state.images:
             c1, c2, c3 = st.columns([4, 1, 1])
             with c2:
                 st.session_state.grid_cols = st.selectbox(
-                    "So cot", [2, 3, 4], index=2,
+                    "Số cột", [2, 3, 4, 5], index=2,
                     key="grid_cols_sel", label_visibility="collapsed"
                 )
             with c3:
-                if st.button("🗑 Xoa het", use_container_width=True):
+                if st.button("🗑 Xóa hết", use_container_width=True):
                     st.session_state.images = []
                     st.session_state.results = {}
-                    st.session_state.batch_stats = {}
+                    st.session_state.batch_stats = {"total": 0, "done": 0, "errors": 0}
                     st.rerun()
         render_grid()
 
