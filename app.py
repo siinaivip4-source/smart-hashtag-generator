@@ -167,6 +167,13 @@ RULES:
         else:
             result["style"] = creative_styles[0]
         result["_fallback_style"] = True
+    # Ensure style is never "none" even if AI returned it
+    elif result["style"] == "none":
+        if opts["style"]:
+            result["style"] = opts["style"][0]
+        else:
+            result["style"] = "realistic"
+        result["_fallback_style"] = True
 
     # Color is mandatory — propose creative fallback
     if result.get("color", "none") in ("none", "", "nan"):
@@ -175,6 +182,13 @@ RULES:
             result["color"] = opts["color"][0]
         else:
             result["color"] = creative_colors[0]
+        result["_fallback_color"] = True
+    # Ensure color is never "none" even if AI returned it
+    elif result["color"] == "none":
+        if opts["color"]:
+            result["color"] = opts["color"][0]
+        else:
+            result["color"] = "black"
         result["_fallback_color"] = True
 
     return result
@@ -418,13 +432,17 @@ def render_card(img, idx):
                 st.caption(" AI tự đề xuất hashtag mới (không có trong DB)")
 
             # Row 1: OBJECT 1 | OBJECT 2
-            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">OBJECT 1 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; OBJECT 2</div>', unsafe_allow_html=True)
-            o1_opts = ["none"] + opts["object_1"]
-            o2_opts = ["none"] + opts["object_2"]
-            c1, c2 = st.columns(2)
+            st.markdown('<div style="display:flex;gap:8px;margin-top:8px;margin-bottom:4px;"><span style="flex:1;text-align:center;font-size:9px;color:#8b949e;font-weight:bold;">OBJECT 1</span><span style="flex:1;text-align:center;font-size:9px;color:#8b949e;font-weight:bold;">OBJECT 2</span></div>', unsafe_allow_html=True)
+            o1_opts = opts["object_1"]  # No "none" for object_1
+            o2_opts = ["none"] + opts["object_2"]  # "none" allowed for object_2
+            # Ensure object_1 never defaults to "none"
+            obj1_val = r.get("object_1", "none")
+            if obj1_val == "none" and o1_opts:
+                obj1_val = o1_opts[0]
+            c1, c2 = st.columns((1, 1), gap="small")
             with c1:
-                r["object_1"] = st.selectbox("", options=o1_opts,
-                                              index=safe_index(o1_opts, r.get("object_1","none")),
+                r["object_1"] = st.selectbox("", options=o1_opts if o1_opts else ["subject"],
+                                              index=safe_index(o1_opts if o1_opts else ["subject"], obj1_val),
                                               key=f"o1_{idx}", label_visibility="collapsed")
             with c2:
                 r["object_2"] = st.selectbox("", options=o2_opts,
@@ -432,23 +450,30 @@ def render_card(img, idx):
                                               key=f"o2_{idx}", label_visibility="collapsed")
 
             # Row 2: STYLE | COLOR | MOOD
-            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">STYLE &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; COLOR &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; MOOD</div>', unsafe_allow_html=True)
-            s_opts = ["none"] + opts["style"]
-            c_opts = ["none"] + opts["color"]
-            c1, c2, c3 = st.columns(3)
+            st.markdown('<div style="display:flex;gap:8px;margin-top:8px;margin-bottom:4px;"><span style="flex:1;text-align:center;font-size:9px;color:#8b949e;font-weight:bold;">STYLE</span><span style="flex:1;text-align:center;font-size:9px;color:#8b949e;font-weight:bold;">COLOR</span><span style="flex:1;text-align:center;font-size:9px;color:#8b949e;font-weight:bold;">MOOD</span></div>', unsafe_allow_html=True)
+            s_opts = opts["style"]  # No "none" option for style
+            c_opts = opts["color"]  # No "none" option for color
+            # Ensure we never default to index 0 if it's "none"
+            style_val = r.get("style", "none")
+            color_val = r.get("color", "none")
+            if style_val == "none" and s_opts:
+                style_val = s_opts[0]
+            if color_val == "none" and c_opts:
+                color_val = c_opts[0]
+            c1, c2, c3 = st.columns((1, 1, 1), gap="small")
             with c1:
-                r["style"] = st.selectbox("", options=s_opts,
-                                           index=safe_index(s_opts, r.get("style","none")),
+                r["style"] = st.selectbox("", options=s_opts if s_opts else ["realistic"],
+                                           index=safe_index(s_opts if s_opts else ["realistic"], style_val),
                                            key=f"sty_{idx}", label_visibility="collapsed")
             with c2:
-                r["color"] = st.selectbox("", options=c_opts,
-                                           index=safe_index(c_opts, r.get("color","none")),
+                r["color"] = st.selectbox("", options=c_opts if c_opts else ["black"],
+                                           index=safe_index(c_opts if c_opts else ["black"], color_val),
                                            key=f"clr_{idx}", label_visibility="collapsed")
             with c3:
                 r["mood"] = st.selectbox("", options=["none"], index=0, key=f"mood_{idx}", label_visibility="collapsed")
 
             # Row 3: GENDER
-            st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:6px;margin-bottom:2px;">GENDER</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-size:9px;color:#8b949e;font-weight:bold;margin-top:8px;margin-bottom:4px;text-align:center;">GENDER</div>', unsafe_allow_html=True)
             r["gender"] = st.selectbox("", options=["none"], index=0, key=f"gen_{idx}", label_visibility="collapsed")
 
             st.session_state.results[img["name"]] = r
