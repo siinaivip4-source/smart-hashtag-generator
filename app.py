@@ -56,11 +56,13 @@ def load_dropdown_options(app_name: str):
     level1 = set()
     level2 = set()
     level3 = set()
+    all_objects = set()
     for t in tags:
         cat = t.get("category", "")
         h = t["hashtag"]
         p = parent_map.get(h)
         if cat == "object":
+            all_objects.add(h)
             if p is None:
                 level1.add(h)
             elif parent_map.get(p) is None:
@@ -68,9 +70,9 @@ def load_dropdown_options(app_name: str):
             else:
                 level3.add(h)
 
-    opts["object_1"] = sorted(level1)
-    opts["object_2"] = sorted(level2)
-    opts["object_3"] = sorted(level3)
+    opts["object_1"] = sorted(all_objects)
+    opts["object_2"] = sorted(all_objects)
+    opts["object_3"] = sorted(all_objects)
     opts["style"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "style"))
     opts["color"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "color"))
     st.session_state.dropdown_options = opts
