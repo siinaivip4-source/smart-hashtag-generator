@@ -105,7 +105,29 @@ def normalize_objects(result: dict) -> dict:
     return result
 
 
-# ===================== AI ENGINE =====================
+# ===================== AUTO-FILL EMPTY FIELDS =====================
+def auto_fill_empty(result: dict) -> dict:
+    """If AI returns 'none' for all objects, auto-pick from DB. Style/Color get suggestions."""
+    opts = st.session_state.dropdown_options
+
+    # Object mandatory: at least one must have a value
+    obj_fields = ["object_1", "object_2", "object_3"]
+    all_none = all(result.get(f, "none") in ("none", "", "nan") for f in obj_fields)
+    if all_none and opts["object_1"]:
+        result["object_1"] = f"[SUGGEST] {opts['object_1'][0]}"
+        result["_suggested_obj"] = True
+
+    # Style: auto-pick if none
+    if result.get("style", "none") in ("none", "", "nan") and opts["style"]:
+        result["style"] = f"[SUGGEST] {opts['style'][0]}"
+        result["_suggested_style"] = True
+
+    # Color: auto-pick if none
+    if result.get("color", "none") in ("none", "", "nan") and opts["color"]:
+        result["color"] = f"[SUGGEST] {opts['color'][0]}"
+        result["_suggested_color"] = True
+
+    return result
 def analyze_image(image_bytes: bytes, app_name: str) -> dict:
     from ai_engine import AIVisionEngine
     from config import AI_API_KEY, AI_API_URL
@@ -119,7 +141,8 @@ def analyze_image(image_bytes: bytes, app_name: str) -> dict:
 
     engine = AIVisionEngine()
     result = engine.analyze_image(image_bytes, existing_tags)
-    return normalize_objects(result)
+    result = normalize_objects(result)
+    return auto_fill_empty(result)
 
 
 # ===================== EXPORT =====================
@@ -251,8 +274,10 @@ def run_batch_parallel():
     progress = st.progress(0)
     status = st.empty()
 
-    # Parallel processing with ThreadPoolExecutor
-    max_workers = min(4, len(st.session_state.images))
+    # Parallel processing with ThreadPoolExecutor (I/O bound, more workers = faster)
+    max_workers = min(8, len(st.session_state.images))
+    import time as _time
+    _t0 = _time.time()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_single, img, app_name): img["name"] for img in st.session_state.images}
         for i, future in enumerate(as_completed(futures)):
@@ -265,16 +290,49 @@ def run_batch_parallel():
             progress.progress((i + 1) / len(st.session_state.images))
             status.text(f"Da xu ly {i+1}/{len(st.session_state.images)}")
 
-    status.text(f"Hoan thanh! {st.session_state.batch_stats['done']} xong, {st.session_state.batch_stats['errors']} loi")
+    elapsed = _time.time() - _t0
+    status.text(f"Hoan thanh! {st.session_state.batch_stats['done']} xong, {st.session_state.batch_stats['errors']} loi trong {elapsed:.1f}s")
     st.session_state.processing = False
     st.rerun()
 
 
-# ===================== UI: CARD =====================
+# ===================== SUGGEST MISSING =====================
+def suggest_missing(img: dict, idx: int):
+    """When a card has 'none' fields, this re-analyzes with a fallback prompt or picks from DB."""
+    r = st.session_state.results.get(img["name"], {})
+    opts = st.session_state.dropdown_options
+    import random
+
+    # Check what's missing and fill from DB
+    changed = False
+    if r.get("object_1", "none") in ("none", "", "nan") and opts["object_1"]:
+        r["object_1"] = random.choice(opts["object_1"][:20]) if len(opts["object_1"]) > 20 else random.choice(opts["object_1"])
+        r["_suggested_obj"] = True
+        changed = True
+    if r.get("style", "none") in ("none", "", "nan") and opts["style"]:
+        r["style"] = random.choice(opts["style"][:10]) if len(opts["style"]) > 10 else random.choice(opts["style"])
+        r["_suggested_style"] = True
+        changed = True
+    if r.get("color", "none") in ("none", "", "nan") and opts["color"]:
+        r["color"] = random.choice(opts["color"][:10]) if len(opts["color"]) > 10 else random.choice(opts["color"])
+        r["_suggested_color"] = True
+        changed = True
+
+    if changed:
+        st.session_state.results[img["name"]] = r
+        st.toast(f"Da goi y hashtag cho {img['name'][:20]}...", icon="💡")
+    else:
+        st.toast("Tat ca cac truong deu da co du lieu", icon="✅")
 def safe_index(options, value):
     try:
         return options.index(value)
     except ValueError:
+        # Handle [SUGGEST] prefix
+        if isinstance(value, str) and value.startswith("[SUGGEST] "):
+            try:
+                return options.index(value[10:])
+            except ValueError:
+                pass
         return 0
 
 
@@ -309,6 +367,14 @@ def render_card(img, idx):
         st.markdown(f"**STT:{img['stt']}** | Qwen3.6 | {badge}", unsafe_allow_html=True)
 
         if status == "done":
+            # Show suggestions hint
+            if r.get("_suggested_obj"):
+                st.caption("💡 Object được gợi ý từ DB (AI không nhận diện được)")
+            if r.get("_suggested_style"):
+                st.caption("💡 Style được gợi ý từ DB")
+            if r.get("_suggested_color"):
+                st.caption("💡 Color được gợi ý từ DB")
+
             # OBJECT section
             st.markdown('<div style="font-size:9px;color:#8b949e;margin-top:4px;">🔹 OBJECT</div>', unsafe_allow_html=True)
             o1_opts = ["none"] + opts["object_1"]
@@ -339,14 +405,20 @@ def render_card(img, idx):
 
             st.session_state.results[img["name"]] = r
 
-            # Re-analyze button
-            if st.button("▶", key=f"re_{idx}", use_container_width=True):
-                st.session_state.results[img["name"]] = {"status": "processing"}
-                st.rerun()
-                new_r = analyze_image(img["bytes"], st.session_state.app_name)
-                new_r["status"] = "done"
-                st.session_state.results[img["name"]] = new_r
-                st.rerun()
+            # Buttons: re-analyze + suggest
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                if st.button("🔄 Chay lai", key=f"re_{idx}", use_container_width=True):
+                    st.session_state.results[img["name"]] = {"status": "processing"}
+                    st.rerun()
+                    new_r = analyze_image(img["bytes"], st.session_state.app_name)
+                    new_r["status"] = "done"
+                    st.session_state.results[img["name"]] = new_r
+                    st.rerun()
+            with bc2:
+                if st.button("✨ Goi y", key=f"sug_{idx}", use_container_width=True):
+                    suggest_missing(img, idx)
+                    st.rerun()
 
         elif status == "pending":
             st.caption("Hashtag sẽ xuất hiện ở đây sau khi chạy.")
