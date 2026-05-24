@@ -148,16 +148,33 @@ RULES:
     except Exception:
         pass
 
-    # Fallback: if still none for object_1, pick from DB
+    # Fallback: ensure style & color are NEVER "none"
     opts = st.session_state.dropdown_options
-    if result.get("object_1", "none") in ("none", "", "nan") and opts["object_1"]:
-        result["object_1"] = opts["object_1"][0]
+
+    # Object 1 is mandatory
+    if result.get("object_1", "none") in ("none", "", "nan"):
+        if opts["object_1"]:
+            result["object_1"] = opts["object_1"][0]
+        else:
+            result["object_1"] = "unknown_object"
         result["_fallback_obj"] = True
-    if result.get("style", "none") in ("none", "", "nan") and opts["style"]:
-        result["style"] = opts["style"][0]
+
+    # Style is mandatory — propose creative fallback
+    if result.get("style", "none") in ("none", "", "nan"):
+        creative_styles = ["realistic", "animeart", "2d", "3d", "cartoon", "sketch", "illustration", "photorealistic"]
+        if opts["style"]:
+            result["style"] = opts["style"][0]
+        else:
+            result["style"] = creative_styles[0]
         result["_fallback_style"] = True
-    if result.get("color", "none") in ("none", "", "nan") and opts["color"]:
-        result["color"] = opts["color"][0]
+
+    # Color is mandatory — propose creative fallback
+    if result.get("color", "none") in ("none", "", "nan"):
+        creative_colors = ["black", "white", "red", "blue", "green", "yellow", "multicolor"]
+        if opts["color"]:
+            result["color"] = opts["color"][0]
+        else:
+            result["color"] = creative_colors[0]
         result["_fallback_color"] = True
 
     return result

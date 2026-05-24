@@ -141,14 +141,27 @@ CRITICAL RULES:
             lines = content.split("\n")
             content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
 
+        def _force_value(val, field):
+            v = str(val).lower().replace(" ", "")
+            if v in ("none", "", "nan"):
+                if field == "object_1":
+                    return "subject"
+                elif field in ("object_2", "object_3"):
+                    return "none"
+                elif field == "style":
+                    return "realistic"
+                elif field == "color":
+                    return "unknown"
+            return v
+
         try:
             data = json.loads(content)
             return {
-                "object_1": str(data.get("object_1", "none")).lower().replace(" ", ""),
-                "object_2": str(data.get("object_2", "none")).lower().replace(" ", ""),
-                "object_3": str(data.get("object_3", "none")).lower().replace(" ", ""),
-                "style": str(data.get("style", "none")).lower().replace(" ", ""),
-                "color": str(data.get("color", "none")).lower().replace(" ", ""),
+                "object_1": _force_value(data.get("object_1", "none"), "object_1"),
+                "object_2": _force_value(data.get("object_2", "none"), "object_2"),
+                "object_3": _force_value(data.get("object_3", "none"), "object_3"),
+                "style": _force_value(data.get("style", "none"), "style"),
+                "color": _force_value(data.get("color", "none"), "color"),
                 "mood": "none",
                 "gender": "none",
             }
@@ -159,11 +172,11 @@ CRITICAL RULES:
                 try:
                     data = json.loads(content[start:end + 1])
                     return {
-                        "object_1": str(data.get("object_1", "none")).lower().replace(" ", ""),
-                        "object_2": str(data.get("object_2", "none")).lower().replace(" ", ""),
-                        "object_3": str(data.get("object_3", "none")).lower().replace(" ", ""),
-                        "style": str(data.get("style", "none")).lower().replace(" ", ""),
-                        "color": str(data.get("color", "none")).lower().replace(" ", ""),
+                        "object_1": _force_value(data.get("object_1", "none"), "object_1"),
+                        "object_2": _force_value(data.get("object_2", "none"), "object_2"),
+                        "object_3": _force_value(data.get("object_3", "none"), "object_3"),
+                        "style": _force_value(data.get("style", "none"), "style"),
+                        "color": _force_value(data.get("color", "none"), "color"),
                         "mood": "none",
                         "gender": "none",
                     }
@@ -172,8 +185,8 @@ CRITICAL RULES:
         return self._empty_result()
 
     def _empty_result(self) -> Dict:
-        return {"object_1": "none", "object_2": "none", "object_3": "none",
-                "style": "none", "color": "none", "mood": "none", "gender": "none"}
+        return {"object_1": "subject", "object_2": "none", "object_3": "none",
+                "style": "realistic", "color": "unknown", "mood": "none", "gender": "none"}
 
     def _mock_analyze(self, existing_tags: str) -> Dict:
         return {
