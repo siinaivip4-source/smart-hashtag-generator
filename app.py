@@ -82,8 +82,8 @@ def load_dropdown_options(app_name: str):
 
 # ===================== AI ENGINE =====================
 def analyze_image(image_bytes: bytes, app_name: str):
-    from config import AI_API_URL, AI_API_KEY, VISION_SYSTEM_PROMPT
-    import httpx
+    from ai_engine import AIVisionEngine
+    from config import AI_API_KEY, AI_API_URL
 
     db = get_db()
     existing_tags = ""
@@ -92,69 +92,8 @@ def analyze_image(image_bytes: bytes, app_name: str):
 
     st.session_state.is_mock = not (AI_API_KEY and AI_API_URL)
 
-    if st.session_state.is_mock:
-        opts = st.session_state.dropdown_options
-        return {
-            "object_1": opts["object_1"][0] if opts["object_1"] else "none",
-            "object_2": opts["object_2"][0] if opts["object_2"] else "none",
-            "object_3": opts["object_3"][0] if opts["object_3"] else "none",
-            "style": opts["style"][0] if opts["style"] else "none",
-            "color": opts["color"][0] if opts["color"] else "none",
-            "mood": "none",
-            "gender": "none",
-            "_mock": True
-        }
-
-    prompt = f"""Analyze this image. Return ONLY JSON:
-{{
-  "object_1": "level1_object",
-  "object_2": "level2_object",
-  "object_3": "level3_object",
-  "style": "art_style",
-  "color": "dominant_color",
-  "mood": "none",
-  "gender": "none"
-}}
-Use these as reference: {existing_tags[:500]}"""
-
-    try:
-        import base64
-        b64 = base64.b64encode(image_bytes).decode()
-        payload = {
-            "model": "vision-v1",
-            "messages": [
-                {"role": "system", "content": VISION_SYSTEM_PROMPT},
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-                ]}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 500,
-            "response_format": {"type": "json_object"}
-        }
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(AI_API_URL, json=payload, headers={
-                "Authorization": f"Bearer {AI_API_KEY}",
-                "Content-Type": "application/json"
-            })
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            import json
-            result = json.loads(content)
-            return {
-                "object_1": result.get("object_1", "none"),
-                "object_2": result.get("object_2", "none"),
-                "object_3": result.get("object_3", "none"),
-                "style": result.get("style", "none"),
-                "color": result.get("color", "none"),
-                "mood": "none",
-                "gender": "none",
-            }
-    except Exception as e:
-        st.session_state.ai_error = str(e)[:200]
-        return {"object_1": "none", "object_2": "none", "object_3": "none", "style": "none", "color": "none", "mood": "none", "gender": "none", "error": str(e)[:200]}
+    engine = AIVisionEngine()
+    return engine.analyze_image(image_bytes, existing_tags)
 
 
 # ===================== EXPORT =====================

@@ -22,8 +22,11 @@ SUPABASE_KEY = _get_config("SUPABASE_KEY")
 SUPABASE_TABLE = _get_config("SUPABASE_TABLE", "core_hashtags")
 
 # --- OpenCode Vision API Configuration ---
-AI_API_URL = _get_config("AI_API_URL", "https://api.opencode.ai/v1/vision/analyze")
+# OpenCode Go: Qwen3.6 Plus uses Anthropic Messages format
+AI_API_URL = _get_config("AI_API_URL", "https://opencode.ai/zen/go/v1/messages")
 AI_API_KEY = _get_config("AI_API_KEY")
+AI_API_TYPE = _get_config("AI_API_TYPE", "anthropic")  # "anthropic" or "openai"
+AI_MODEL = _get_config("AI_MODEL", "qwen3.6-plus")
 
 # --- Application Constants ---
 APP_NAMES = ["W1", "3D1", "3D2", "3D3", "Zipper", "Charging"]
@@ -48,37 +51,13 @@ def col_to_app(col_name: str) -> str:
 
 CATEGORIES = ["object", "style", "color"]
 
-# --- AI Vision Prompt (Engineering) ---
+# --- AI Vision System Prompt ---
 VISION_SYSTEM_PROMPT = """You are a professional image analyst for social media content creation.
-Your task is to analyze the uploaded image and identify hashtags based ONLY on visually observable elements.
+Analyze images and identify hashtags based ONLY on visually observable elements.
 
 STRICT RULES:
 1. ONLY identify objects, styles, and colors that are VISIBLE in the image.
 2. DO NOT analyze mood, emotion, sentiment, gender, or any non-visual characteristics.
 3. DO NOT guess or infer things not present in the image.
-4. For objects: identify the main subjects (people, animals, items, scenes).
-5. For styles: identify the visual art style (2D, 3D, realistic, anime, cartoon, etc.).
-6. For colors: identify the dominant and notable colors in the image.
-7. Return ONLY valid JSON, no other text.
-
-Return format (strict JSON):
-{
-  "exact_matches": ["existing_hashtag_from_provided_list", ...],
-  "proposed_objects": ["new_object_proposal", ...],
-  "proposed_styles": ["new_style_proposal", ...],
-  "proposed_colors": ["new_color_proposal", ...]
-}"""
-
-
-def build_analysis_prompt(existing_tags: str) -> str:
-    """Build the user prompt with the existing tag list for matching."""
-    return f"""Analyze this image and identify hashtags.
-
-EXISTING HASHTAGS IN DATABASE (use these for exact_matches if you see them in the image):
-{existing_tags}
-
-For exact_matches: ONLY include tags from the list above that are ACTUALLY visible in the image.
-For proposed_*: propose NEW tags NOT in the list above, based only on what you SEE.
-
-Keep all tags lowercase, no spaces, single words or simple compound words.
-Maximum 5 proposed tags per category."""
+4. Return ONLY valid JSON matching the requested schema.
+5. Keep all tags lowercase, no spaces, single words or simple compound words."""

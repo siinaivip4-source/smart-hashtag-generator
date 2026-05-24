@@ -1,76 +1,130 @@
 import json
+import base64
 import httpx
 from typing import Dict, List, Optional
 
-from config import AI_API_URL, AI_API_KEY, VISION_SYSTEM_PROMPT, build_analysis_prompt
+from config import AI_API_URL, AI_API_KEY, AI_API_TYPE, AI_MODEL, VISION_SYSTEM_PROMPT
 
 
 class AIVisionEngine:
-    """Handles communication with OpenCode.ai Vision API for image analysis."""
+    """Handles communication with AI Vision API for image analysis."""
 
     def __init__(self):
         self.api_url = AI_API_URL
         self.api_key = AI_API_KEY
-        self.timeout = 60.0
+        self.api_type = AI_API_TYPE
+        self.model = AI_MODEL
+        self.timeout = 90.0
 
     def analyze_image(self, image_bytes: bytes, existing_tags: str,
                       mime_type: str = "image/png") -> Optional[Dict]:
-        """
-        Send image to AI Vision API and get structured hashtag analysis.
-
-        Returns:
-            Dict with keys: exact_matches, proposed_objects, proposed_styles, proposed_colors
-            or None on failure.
-        """
-        if not self.api_url or not self.api_key:
+        if not self.api_key or not self.api_url:
             return self._mock_analyze(existing_tags)
 
-        user_prompt = build_analysis_prompt(existing_tags)
+        user_prompt = self._build_prompt(existing_tags)
 
         try:
-            import base64
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-            data_url = f"data:{mime_type};base64,{image_b64}"
 
-            payload = {
-                "model": "vision-v1",
-                "messages": [
-                    {"role": "system", "content": VISION_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "image_url", "image_url": {"url": data_url}}
-                        ]
-                    }
-                ],
-                "temperature": 0.3,
-                "max_tokens": 2000,
-                "response_format": {"type": "json_object"}
-            }
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-                "User-Agent": "SmartHashtagGenerator/2.0"
-            }
-
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(self.api_url, json=payload, headers=headers)
-                response.raise_for_status()
-                result = response.json()
-
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            return self._parse_response(content)
+            if self.api_type == "anthropic":
+                return self._call_anthropic(image_b64, mime_type, user_prompt)
+            else:
+                return self._call_openai(image_b64, mime_type, user_prompt)
 
         except Exception as e:
-            return {"error": str(e), "exact_matches": [], "proposed_objects": [],
-                    "proposed_styles": [], "proposed_colors": []}
+            return {"error": str(e)[:200], "exact_matches": [],
+                    "proposed_objects": [], "proposed_styles": [],
+                    "proposed_colors": [], "object_1": "none",
+                    "object_2": "none", "object_3": "none",
+                    "style": "none", "color": "none", "mood": "none", "gender": "none"}
 
-    def _parse_response(self, content: str) -> Optional[Dict]:
-        """Parse AI response, handling various JSON formatting issues."""
+    def _call_anthropic(self, image_b64: str, mime_type: str, prompt: str) -> Dict:
+        media_type = mime_type if mime_type.startswith("image/") else "image/png"
+        payload = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "system": VISION_SYSTEM_PROMPT,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image", "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": image_b64
+                    }}
+                ]
+            }]
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "SmartHashtagGenerator/2.0"
+        }
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(self.api_url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = data["content"][0]["text"]
+        return self._parse_response(content)
+
+    def _call_openai(self, image_b64: str, mime_type: str, prompt: str) -> Dict:
+        data_url = f"data:{mime_type};base64,{image_b64}"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": VISION_SYSTEM_PROMPT},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+            "response_format": {"type": "json_object"}
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "SmartHashtagGenerator/2.0"
+        }
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(self.api_url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = data["choices"][0]["message"]["content"]
+        return self._parse_response(content)
+
+    def _build_prompt(self, existing_tags: str) -> str:
+        return f"""Analyze this image and identify hashtags. Return ONLY JSON:
+{{
+  "object_1": "main_subject",
+  "object_2": "secondary_subject",
+  "object_3": "detail_subject",
+  "style": "art_style",
+  "color": "dominant_color",
+  "mood": "none",
+  "gender": "none"
+}}
+
+EXISTING TAGS (use these for reference): {existing_tags[:500]}
+
+Rules:
+- ONLY identify VISIBLE elements
+- NO mood/gender analysis
+- Keep tags lowercase, no spaces
+- Return ONLY valid JSON"""
+
+    def _parse_response(self, content: str) -> Dict:
         if not content:
-            return None
+            return self._empty_result()
 
         content = content.strip()
         if content.startswith("```"):
@@ -80,10 +134,13 @@ class AIVisionEngine:
         try:
             data = json.loads(content)
             return {
-                "exact_matches": self._ensure_list(data.get("exact_matches", [])),
-                "proposed_objects": self._ensure_list(data.get("proposed_objects", [])),
-                "proposed_styles": self._ensure_list(data.get("proposed_styles", [])),
-                "proposed_colors": self._ensure_list(data.get("proposed_colors", [])),
+                "object_1": str(data.get("object_1", "none")).lower().replace(" ", ""),
+                "object_2": str(data.get("object_2", "none")).lower().replace(" ", ""),
+                "object_3": str(data.get("object_3", "none")).lower().replace(" ", ""),
+                "style": str(data.get("style", "none")).lower().replace(" ", ""),
+                "color": str(data.get("color", "none")).lower().replace(" ", ""),
+                "mood": "none",
+                "gender": "none",
             }
         except json.JSONDecodeError:
             start = content.find("{")
@@ -92,27 +149,30 @@ class AIVisionEngine:
                 try:
                     data = json.loads(content[start:end + 1])
                     return {
-                        "exact_matches": self._ensure_list(data.get("exact_matches", [])),
-                        "proposed_objects": self._ensure_list(data.get("proposed_objects", [])),
-                        "proposed_styles": self._ensure_list(data.get("proposed_styles", [])),
-                        "proposed_colors": self._ensure_list(data.get("proposed_colors", [])),
+                        "object_1": str(data.get("object_1", "none")).lower().replace(" ", ""),
+                        "object_2": str(data.get("object_2", "none")).lower().replace(" ", ""),
+                        "object_3": str(data.get("object_3", "none")).lower().replace(" ", ""),
+                        "style": str(data.get("style", "none")).lower().replace(" ", ""),
+                        "color": str(data.get("color", "none")).lower().replace(" ", ""),
+                        "mood": "none",
+                        "gender": "none",
                     }
                 except json.JSONDecodeError:
                     pass
-        return None
+        return self._empty_result()
 
-    def _ensure_list(self, value) -> List[str]:
-        if isinstance(value, list):
-            return [str(v).strip().lower().replace(" ", "") for v in value
-                    if str(v).strip()]
-        return []
+    def _empty_result(self) -> Dict:
+        return {"object_1": "none", "object_2": "none", "object_3": "none",
+                "style": "none", "color": "none", "mood": "none", "gender": "none"}
 
     def _mock_analyze(self, existing_tags: str) -> Dict:
-        """Fallback mock analysis when no API key is configured (for testing UI)."""
         return {
-            "exact_matches": [],
-            "proposed_objects": ["sampleobject1", "sampleobject2"],
-            "proposed_styles": ["samplestyle1"],
-            "proposed_colors": ["blue", "white", "gold"],
+            "object_1": "mock_object1",
+            "object_2": "mock_object2",
+            "object_3": "mock_object3",
+            "style": "mock_style",
+            "color": "mock_color",
+            "mood": "none",
+            "gender": "none",
             "_mock": True
         }
