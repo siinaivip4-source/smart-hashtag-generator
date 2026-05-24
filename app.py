@@ -25,7 +25,7 @@ def init_state():
         "processing": False,
         "db_connected": False,
         "is_mock": True,
-        "dropdown_options": {"object_1": [], "object_2": [], "style": [], "color": []},
+        "dropdown_options": {"object_1": [], "object_2": [], "object_3": [], "style": [], "color": []},
         "start_number": 1,
     }
     for k, v in defaults.items():
@@ -44,7 +44,7 @@ def get_db():
 
 def load_dropdown_options(app_name: str):
     db = get_db()
-    opts = {"object_1": [], "object_2": [], "style": [], "color": [], "mood": ["none"], "gender": ["none"]}
+    opts = {"object_1": [], "object_2": [], "object_3": [], "style": [], "color": [], "mood": ["none"], "gender": ["none"]}
     if not db or not st.session_state.db_connected:
         return opts
 
@@ -55,6 +55,7 @@ def load_dropdown_options(app_name: str):
 
     level1 = set()
     level2 = set()
+    level3 = set()
     for t in tags:
         cat = t.get("category", "")
         h = t["hashtag"]
@@ -62,11 +63,14 @@ def load_dropdown_options(app_name: str):
         if cat == "object":
             if p is None:
                 level1.add(h)
-            else:
+            elif parent_map.get(p) is None:
                 level2.add(h)
+            else:
+                level3.add(h)
 
     opts["object_1"] = sorted(level1)
     opts["object_2"] = sorted(level2)
+    opts["object_3"] = sorted(level3)
     opts["style"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "style"))
     opts["color"] = sorted(set(t["hashtag"] for t in tags if t.get("category") == "color"))
     st.session_state.dropdown_options = opts
@@ -91,6 +95,7 @@ def analyze_image(image_bytes: bytes, app_name: str):
         return {
             "object_1": random.choice(opts["object_1"]) if opts["object_1"] else "none",
             "object_2": random.choice(opts["object_2"]) if opts["object_2"] else "none",
+            "object_3": random.choice(opts["object_3"]) if opts["object_3"] else "none",
             "style": random.choice(opts["style"]) if opts["style"] else "none",
             "color": random.choice(opts["color"]) if opts["color"] else "none",
             "mood": "none",
@@ -101,6 +106,7 @@ def analyze_image(image_bytes: bytes, app_name: str):
 {{
   "object_1": "level1_object",
   "object_2": "level2_object",
+  "object_3": "level3_object",
   "style": "art_style",
   "color": "dominant_color",
   "mood": "none",
@@ -137,13 +143,14 @@ Use these as reference: {existing_tags[:500]}"""
             return {
                 "object_1": result.get("object_1", "none"),
                 "object_2": result.get("object_2", "none"),
+                "object_3": result.get("object_3", "none"),
                 "style": result.get("style", "none"),
                 "color": result.get("color", "none"),
                 "mood": "none",
                 "gender": "none",
             }
     except Exception:
-        return {"object_1": "none", "object_2": "none", "style": "none", "color": "none", "mood": "none", "gender": "none"}
+        return {"object_1": "none", "object_2": "none", "object_3": "none", "style": "none", "color": "none", "mood": "none", "gender": "none"}
 
 
 # ===================== EXPORT =====================
@@ -156,6 +163,7 @@ def export_results(fmt="csv"):
             "Filename": img["name"],
             "Object 1": r.get("object_1", ""),
             "Object 2": r.get("object_2", ""),
+            "Object 3": r.get("object_3", ""),
             "Style": r.get("style", ""),
             "Color": r.get("color", ""),
             "Mood": r.get("mood", "none"),
@@ -278,6 +286,9 @@ def render_card(img, idx):
                 r["object_2"] = st.selectbox("Object 2", options=["none"] + opts["object_2"],
                                               index=max(0, (["none"] + opts["object_2"]).index(r.get("object_2","none"))),
                                               key=f"o2_{idx}", label_visibility="collapsed")
+                r["object_3"] = st.selectbox("Object 3", options=["none"] + opts["object_3"],
+                                              index=max(0, (["none"] + opts["object_3"]).index(r.get("object_3","none"))),
+                                              key=f"o3_{idx}", label_visibility="collapsed")
                 r["style"] = st.selectbox("Style", options=["none"] + opts["style"],
                                            index=max(0, (["none"] + opts["style"]).index(r.get("style","none"))),
                                            key=f"sty_{idx}", label_visibility="collapsed")
