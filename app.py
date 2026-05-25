@@ -547,11 +547,13 @@ def main():
         body { background: #0d1117; color: #c9d1d9; }
         .stApp { background: #0d1117; }
         [data-testid="stSidebar"] { background: #161b22; }
-        .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; }
+        .stSelectbox > div > div { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; min-width: 80px; }
+        .stSelectbox > div > div > div { font-size: 11px !important; white-space: nowrap; overflow: visible; text-overflow: clip !important; }
         .stButton > button { background: #8b5cf6; color: white; border: none; border-radius: 6px; }
         .stDownloadButton > button { background: #1f6feb; color: white; border: none; border-radius: 6px; }
         .stSlider > div > div > div { background: #21262d; }
-        div[data-testid="stHorizontalBlock"] > div { padding: 0 2px; }
+        div[data-testid="stHorizontalBlock"] > div { padding: 0 3px; }
+        .element-container { margin-bottom: 4px !important; }
     </style>
     """, unsafe_allow_html=True)
 
